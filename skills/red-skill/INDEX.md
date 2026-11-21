@@ -2,9 +2,9 @@
 
 > 自动生成，勿手改。更新命令：`python3 scripts/index.py update`。
 
-- 生成时间：2026-11-21 16:39
+- 生成时间：2026-11-21 19:06
 - 条目总数：147（技能 86 / SRC 入口 1 / 知识库 48 / 规则 12）
-- 库根目录：`/app/skills/red-skill/library`
+- 库根目录：`library`
 
 ## 常用场景路由
 

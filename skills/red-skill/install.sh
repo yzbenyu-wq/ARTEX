@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 安装 red-skill：默认软链到 ~/.qoder-cn/skills/jameslee-red。
+# 安装 red-skill：默认软链到 ~/.qoder-cn/skills/red-skill。
 # 用法：./install.sh [--to DIR] [--copy]
 set -eu
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DEST_DEFAULT="$HOME/.qoder-cn/skills/jameslee-red"
+DEST_DEFAULT="$HOME/.qoder-cn/skills/red-skill"
 DEST="$DEST_DEFAULT"
 MODE="link"
 
@@ -53,4 +53,4 @@ else
 fi
 
 echo "自检：python3 \"$DEST/scripts/index.py\" check"
-echo "调用：RED_SKILL=\"$DEST\"（或保持默认源路径）"
+echo "调用：SKILL_DIR=\"$DEST\" python3 \"$DEST/scripts/index.py\" find \"越权\""

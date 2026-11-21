@@ -1,6 +1,6 @@
 ---
 name: api-recon
-description: 收集网站API接口时调用该skill。
+description: 已授权目标的前端接口侦察：收集与枚举网站 API（路径/METHOD/参数/响应）、前端路由、UI 触发点与权限树/菜单项。适用于梳理后端接口面、从 JS bundle 静态提取 endpoint、hook XHR/fetch/WebSocket 录制运行时请求、diff 参数必填/可选、还原 SPA 菜单权限。只做接口面枚举，不做漏洞利用。
 ---
 
 # API Recon（前端接口侦察）

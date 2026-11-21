@@ -323,8 +323,11 @@ def build_index(library: Path) -> dict:
         if n:
             groups.append({"id": gid, "zh": group_zh.get(gid, gid), "count": n})
 
+    # 用稳定标识而非绝对路径，保证宿主机与容器内生成的签名一致。
+    bundled_library = (SKILL_DIR / "library").resolve()
+    library_id = "library" if library.resolve() == bundled_library else str(library)
     config_sig = hashlib.sha256(
-        str(library).encode("utf-8")
+        library_id.encode("utf-8")
         + b"\0"
         + (TAXONOMY.read_bytes() if TAXONOMY.exists() else b"")
         + b"\0"
@@ -334,7 +337,7 @@ def build_index(library: Path) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": "",
-        "library": str(library),
+        "library": library_id,
         "config_sig": config_sig,
         "entry_count": len(entries),
         "counts": counts,
@@ -851,7 +854,7 @@ def resolve_library(value: Optional[str]) -> Path:
     else:
         path = DEFAULT_LIBRARY
     if not path.exists():
-        die(f"库根目录不存在：{path}（可写 meta/library.txt 或设 RED_LIBRARY）")
+        die(f"库根目录不存在：{path}（用 --library 或 RED_LIBRARY 指定）")
     if not (path / SRC_DIR_NAME / "SKILL.md").exists():
         die(f"不是有效源库：{path}（缺少 {SRC_DIR_NAME}/SKILL.md）")
     return path
@@ -859,7 +862,7 @@ def resolve_library(value: Optional[str]) -> Path:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="红队 / SRC 技能库索引工具")
-    parser.add_argument("--library", help="库根目录（默认 RED_LIBRARY、meta/library.txt 或本技能上级目录）")
+    parser.add_argument("--library", help="库根目录（默认技能内 library/，可用 RED_LIBRARY 覆盖）")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_update = sub.add_parser("update", help="扫描并重建索引")

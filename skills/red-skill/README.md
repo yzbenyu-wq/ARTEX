@@ -1,4 +1,4 @@
-# jameslee-red · 维护手册
+# red-skill · 维护手册
 
 单入口红队 / SRC 技能：生成式索引 + 12 张中文决策卡 + 按节抽取原文。
 源库已整体收进 `library/`，按 12 个领域目录 + `00-src` 分类，内部文件保持原样。
@@ -18,7 +18,6 @@ red-skill/
 ├── CHANGELOG.md        # 每次 update 的增删改记录
 ├── cards/              # 12 张决策卡（每张 ≤60 行）
 ├── meta/taxonomy.yaml  # 16 个领域分组 → 源目录
-├── meta/library.txt    # 源库绝对路径（本包指向 library/）
 ├── meta/overrides.yaml # 场景路由 / 摘要 / 卡片指针 / verified 日期
 ├── tests/golden.json   # 12 条黄金路由用例（hit@3）
 ├── scripts/index.py    # 唯一工具入口
@@ -45,15 +44,18 @@ red-skill/
 
 ## 常用命令
 
-```bash
-RED="${RED_SKILL:-$HOME/Desktop/red-skill}"
+本技能自包含，`library/` 就在技能目录内；ARTEX 会在运行环境注入 `SKILL_DIR`，
+独立使用时把它设为本目录的绝对路径。
 
-python3 "$RED/scripts/index.py" find "有登录态怎么测越权"
-python3 "$RED/scripts/index.py" find "K8s 容器逃逸" --json
-python3 "$RED/scripts/index.py" show kb:idor-test --section "测试流程"
-python3 "$RED/scripts/index.py" stats
-python3 "$RED/scripts/index.py" update    # 增量收录；无变化不写文件
-python3 "$RED/scripts/index.py" check     # 全量门禁，失败退出 1
+```bash
+SKILL_DIR=/path/to/skills/red-skill
+
+python3 "$SKILL_DIR/scripts/index.py" find "有登录态怎么测越权"
+python3 "$SKILL_DIR/scripts/index.py" find "K8s 容器逃逸" --json
+python3 "$SKILL_DIR/scripts/index.py" show kb:idor-test --section "测试流程"
+python3 "$SKILL_DIR/scripts/index.py" stats
+python3 "$SKILL_DIR/scripts/index.py" update    # 增量收录；无变化不写文件
+python3 "$SKILL_DIR/scripts/index.py" check     # 全量门禁，失败退出 1
 ```
 
 `show` 规则：≤80 行整篇输出；81–300 行只给前 80 行 + 目录；>300 行必须
@@ -70,7 +72,7 @@ python3 "$RED/scripts/index.py" check     # 全量门禁，失败退出 1
 定时（可选，不自动安装）：
 
 ```cron
-17 8 * * * /Users/chunjunli/Desktop/red-skill/scripts/daily.sh
+17 8 * * * /path/to/skills/red-skill/scripts/daily.sh
 ```
 
 ## 新增一条路由
@@ -97,7 +99,7 @@ CORS 不挖；报告只认 `vuln-report-format`；仅授权目标，禁止批量
 ## 安装
 
 ```bash
-./install.sh                 # 软链到 ~/.qoder-cn/skills/jameslee-red
+./install.sh                 # 软链到 ~/.qoder-cn/skills/red-skill
 ./install.sh --to /path/dir  # 指定目标
 ./install.sh --copy          # 复制而非软链（如装进 ARTEX）
 ```
@@ -110,5 +112,5 @@ CORS 不挖；报告只认 `vuln-report-format`；仅授权目标，禁止批量
 - `ModuleNotFoundError: yaml` → `pip3 install pyyaml`。
 - `check` 报场景引用不存在 → 看 `find` 输出确认 ID，或先 `update`。
 - 索引过期 → 直接 `update`；不要手改 `index.json` / `INDEX.md`。
-- 源库搬家 → 改 `meta/library.txt` 为新的源库绝对路径，或临时设 `RED_LIBRARY`。
-- 独立部署（本目录不在源库内）必须写 `meta/library.txt`，否则 `check` 会报源库无效。
+- 源库默认就是技能内的 `library/`；确需引用外部源库时设 `RED_LIBRARY`，不要新增指针文件。
+- 本目录是唯一事实源；不要再保留第二份副本，改动只提交仓库内的这一份。

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-11-21 16:39",
-  "library": "/app/skills/red-skill/library",
-  "config_sig": "abb93961b0078cad48ccd26d08343fb2d16cb6a29f4f354ed696e023caf22219",
+  "generated_at": "2026-11-21 19:06",
+  "library": "library",
+  "config_sig": "a816310ea464e8717395bf8170960d95ceb2b5dd12dff819e39ed97bfe57849d",
   "entry_count": 147,
   "counts": {
     "src-entry": 1,
