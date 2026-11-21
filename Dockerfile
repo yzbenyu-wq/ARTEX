@@ -21,6 +21,51 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+# 工具箱预置工具（server/toolpresets.json）所需的二进制。全部固定版本、按 TARGETARCH
+# 从 GitHub Releases 取 linux 构建；版本号与 toolpresets 的 version_cmd 对齐验证过。
+# waybackurls 上游只发 linux amd64，arm64 构建跳过（卡片会显示缺失）。
+# nuclei 模板随镜像预置到 /root/nuclei-templates，避免容器首次运行联网拉取。
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) pd=amd64; ferox=x86_64 ;; \
+      arm64) pd=arm64; ferox=aarch64 ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    tmp="$(mktemp -d)"; \
+    dl() { curl -fsSL --retry 3 --retry-delay 2 -o "$1" "$2"; }; \
+    pdzip() { \
+      name="$1"; ver="$2"; \
+      dl "$tmp/$name.zip" "https://github.com/projectdiscovery/$name/releases/download/v$ver/${name}_${ver}_linux_${pd}.zip"; \
+      unzip -q "$tmp/$name.zip" -d "$tmp/$name"; \
+      install -m 0755 "$tmp/$name/$name" /usr/local/bin/; \
+    }; \
+    pdzip httpx 1.6.10; \
+    pdzip subfinder 2.6.7; \
+    pdzip dnsx 1.2.1; \
+    pdzip tlsx 1.1.7; \
+    pdzip naabu 2.7.0; \
+    pdzip katana 1.1.2; \
+    pdzip nuclei 3.3.5; \
+    dl "$tmp/gau.tar.gz" "https://github.com/lc/gau/releases/download/v2.2.4/gau_2.2.4_linux_${pd}.tar.gz"; \
+    tar -xzf "$tmp/gau.tar.gz" -C "$tmp" gau; \
+    install -m 0755 "$tmp/gau" /usr/local/bin/gau; \
+    dl "$tmp/ffuf.tar.gz" "https://github.com/ffuf/ffuf/releases/download/v2.3.0/ffuf_2.3.0_linux_${pd}.tar.gz"; \
+    tar -xzf "$tmp/ffuf.tar.gz" -C "$tmp" ffuf; \
+    install -m 0755 "$tmp/ffuf" /usr/local/bin/ffuf; \
+    dl "$tmp/ferox.zip" "https://github.com/epi052/feroxbuster/releases/download/v2.14.0/${ferox}-linux-feroxbuster.zip"; \
+    unzip -q "$tmp/ferox.zip" -d "$tmp/ferox"; \
+    install -m 0755 "$tmp/ferox/feroxbuster" /usr/local/bin/feroxbuster; \
+    if [ "$pd" = amd64 ]; then \
+      dl "$tmp/wb.tgz" "https://github.com/tomnomnom/waybackurls/releases/download/v0.1.0/waybackurls-linux-amd64-0.1.0.tgz"; \
+      tar -xzf "$tmp/wb.tgz" -C "$tmp" waybackurls; \
+      install -m 0755 "$tmp/waybackurls" /usr/local/bin/waybackurls; \
+    fi; \
+    dl "$tmp/templates.tar.gz" "https://codeload.github.com/projectdiscovery/nuclei-templates/tar.gz/refs/tags/v10.0.2"; \
+    tar -xzf "$tmp/templates.tar.gz" -C /root; \
+    mv /root/nuclei-templates-10.0.2 /root/nuclei-templates; \
+    mkdir -p /usr/share/wordlists/dirb; \
+    dl /usr/share/wordlists/dirb/common.txt "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt"; \
+    rm -rf "$tmp"
 # 预装 Playwright MCP 与 CLI（全局），运行时不再 npx 联网下载。
 # @playwright/mcp：browser MCP 直接 `npx @playwright/mcp`（已全局装好，无需 -y/@latest）。
 # @playwright/cli：提供 playwright-cli，装完顺带 --help 验证可执行。
