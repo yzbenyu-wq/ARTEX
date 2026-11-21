@@ -313,6 +313,7 @@ func (m *Manager) SetTaskControlMutex(mu *sync.Mutex) { m.controlMu = mu }
 // Settings keys the UI toggles at runtime.
 const (
 	settingTrafficCapture      = "traffic_capture"
+	settingTrafficExcludeHosts = "traffic_exclude_hosts"
 	settingBrowserScreenshot   = "browser_screenshot_enabled"
 	settingScreenshotTimestamp = "browser_screenshot_timestamp_enabled"
 	settingOpsecEnabled        = "opsec_enabled"
@@ -647,6 +648,18 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			}()
 		}
 	}
+	// 记录排除名单：环境自身的 apt/pip 等噪音不该进任务证据。配置损坏时
+	// 忽略而不是带病过滤，避免把真实目标流量也吞掉。
+	if m.traffic != nil {
+		if v, ok, _ := pg.GetSetting(settingTrafficExcludeHosts); ok {
+			patterns, perr := traffic.ParseExcludeHosts(v)
+			if perr != nil {
+				log.Printf("[traffic] 排除主机配置无效，已忽略: %v", perr)
+			} else {
+				m.traffic.SetExcludeHosts(patterns)
+			}
+		}
+	}
 	// Asset auto-completion engine (§5): HTTP probes routed through the recording
 	// proxy (via m.ProxyAddr, which honors the traffic-capture toggle).
 	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
@@ -709,6 +722,38 @@ func (m *Manager) SetTrafficEnabled(on bool) error {
 	// ProxyAddr/ProxyCACert honor it. putSettings rebuilds agents next (applyLLM),
 	// which re-spawns the MCP with the new args/env.
 	m.syncBrowserMCPProxy()
+	return nil
+}
+
+// TrafficExcludeHosts returns the persisted capture-exclusion list, normalized
+// to one pattern per line for the settings UI.
+func (m *Manager) TrafficExcludeHosts() string {
+	v, _, _ := m.pg.GetSetting(settingTrafficExcludeHosts)
+	patterns, err := traffic.ParseExcludeHosts(v)
+	if err != nil {
+		return ""
+	}
+	return strings.Join(patterns, "\n")
+}
+
+// SetTrafficExcludeHosts validates, persists and applies the capture-exclusion
+// list. Excluded hosts are still proxied but no longer recorded; traffic that
+// was already captured is untouched. Effective immediately, no agent rebuild.
+func (m *Manager) SetTrafficExcludeHosts(raw string) error {
+	patterns, err := traffic.ParseExcludeHosts(raw)
+	if err != nil {
+		return err
+	}
+	normalized := strings.Join(patterns, "\n")
+	if err := m.pg.SetSetting(settingTrafficExcludeHosts, normalized); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	tr := m.traffic
+	m.mu.Unlock()
+	if tr != nil {
+		tr.SetExcludeHosts(patterns)
+	}
 	return nil
 }
 

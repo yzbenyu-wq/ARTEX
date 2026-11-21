@@ -187,6 +187,7 @@ export const overviewMessages = {
     "入 {{input}}（含缓存 {{cache}}）· 出 {{output}}",
     "In {{input}} (including cache {{cache}}) · Out {{output}}",
   ],
+  "overview.tokenScope": ["任务 {{tasks}} · 对话 {{convs}}", "Tasks {{tasks}} · Conversations {{convs}}"],
   "overview.runningConversations_one": ["{{count}} 个对话运行中", "{{count}} conversation running"],
   "overview.runningConversations_other": ["{{count}} 个对话运行中", "{{count}} conversations running"],
   "overview.conversationsDeleted_one": ["已删除 {{count}} 个对话", "Deleted {{count}} conversation"],

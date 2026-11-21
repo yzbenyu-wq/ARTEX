@@ -487,6 +487,19 @@ export default function DashboardPage() {
       : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
   }, [tokenTab, tokenByProfile]);
 
+  // 旧版把任务与会话两份用量合在一起：任务被删除后大数字仍显示会话消耗，
+  // 只标「N 个任务」会变成「0 个任务 · 46 万 token」的自相矛盾。把两份来源
+  // 分别标出来，数字才对得上。
+  const convCount = React.useMemo(() => {
+    let n = 0;
+    for (const c of convTokens) {
+      if (tokenTab !== "all" && (c.llm_profile_id ?? defaultProfileId) !== tokenTab) continue;
+      if (c.input_tokens + c.output_tokens + c.cache_read_tokens + c.cache_write_tokens === 0) continue;
+      n++;
+    }
+    return n;
+  }, [convTokens, tokenTab, defaultProfileId]);
+
   // 旧版每日：把任务/会话的总量按其创建日期归桶（近似，非真实每日消耗）。
   const dailyTokenDataOld = React.useMemo(() => {
     const now = new Date();
@@ -782,7 +795,7 @@ export default function DashboardPage() {
                 {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
               </div>
               <div className="mt-0.5 text-[10px] text-muted-foreground">
-                {translate("overview.taskCount", { count: displayedTokens.taskCount })}
+                {translate("overview.tokenScope", { tasks: displayedTokens.taskCount, convs: convCount })}
               </div>
             </div>
 

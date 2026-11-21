@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -54,6 +55,45 @@ func TestFetchLatestMissingRelease(t *testing.T) {
 	_, err := FetchLatest(context.Background(), client)
 	if err == nil || !strings.Contains(err.Error(), "yzbenyu-wq/ARTEX") || !strings.Contains(err.Error(), "不可访问或尚未发布") {
 		t.Fatalf("unexpected missing-release error: %v", err)
+	}
+}
+
+func TestFetchErrorKinds(t *testing.T) {
+	respond := func(status int, body string) *http.Client {
+		return &http.Client{Transport: releaseTransport(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+	}
+	for _, tc := range []struct {
+		name   string
+		client *http.Client
+		want   string
+	}{
+		{"not found", respond(http.StatusNotFound, "{}"), FetchKindNotFound},
+		{"forbidden", respond(http.StatusForbidden, "{}"), FetchKindRateLimit},
+		{"too many requests", respond(http.StatusTooManyRequests, "{}"), FetchKindRateLimit},
+		{"server error", respond(http.StatusInternalServerError, "{}"), FetchKindHTTP},
+		{"invalid json", respond(http.StatusOK, "{"), FetchKindInvalid},
+		{"missing tag", respond(http.StatusOK, `{}`), FetchKindInvalid},
+		{"network", &http.Client{Transport: releaseTransport(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("dial tcp: lookup api.github.com: no such host")
+		})}, FetchKindNetwork},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := FetchLatest(context.Background(), tc.client)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := KindOf(err); got != tc.want {
+				t.Fatalf("KindOf = %q, want %q (err: %v)", got, tc.want, err)
+			}
+		})
+	}
+	if got := KindOf(nil); got != "" {
+		t.Fatalf("KindOf(nil) = %q, want empty", got)
+	}
+	if got := KindOf(errors.New("plain")); got != "other" {
+		t.Fatalf("KindOf(plain) = %q, want other", got)
 	}
 }
 

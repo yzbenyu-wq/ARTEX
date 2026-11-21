@@ -237,6 +237,9 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 	rel, err := relCache.get(r.Context(), client, force, network)
 	if err != nil {
 		out["error"] = err.Error()
+		// 分类而不是让前端猜错误文本：仓库没发布正式版和连不上 GitHub 需要
+		// 完全不同的引导（前者配代理也没用）。
+		out["error_kind"] = selfupdate.KindOf(err)
 		writeJSON(w, 200, out)
 		return
 	}

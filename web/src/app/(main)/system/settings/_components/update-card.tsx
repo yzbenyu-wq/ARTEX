@@ -22,6 +22,7 @@ import { localizedError } from "@/i18n/errors";
 import { useLiveTranslation } from "@/i18n/use-live-translation";
 import { api, openSSE } from "@/lib/api";
 import type { UpdateCheck, UpdateProgress, UpdateSettings } from "@/lib/types";
+import { updateErrorHintKey } from "@/lib/update-hints";
 
 /** 等待新版本上线的最长时间。一次升级要经过三次进程启动（暂存 → 换装 → 新版），
  *  每次都是秒级，三分钟足够覆盖慢磁盘和 Docker 容器重建。 */
@@ -326,10 +327,16 @@ export function UpdateCard() {
         {info?.error && (
           <p className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
-            {t("settings.githubUnavailablePrefix")}
-            {info.error}
-            {"　"}
-            {t("settings.retryUpdateNetwork")}
+            {info.error_kind === "not_found" ? (
+              t("settings.updateErrorHintNotFound", { repo: info.repo })
+            ) : (
+              <>
+                {t("settings.githubUnavailablePrefix")}
+                {info.error}
+                {"　"}
+                {t(updateErrorHintKey(info.error_kind))}
+              </>
+            )}
           </p>
         )}
 

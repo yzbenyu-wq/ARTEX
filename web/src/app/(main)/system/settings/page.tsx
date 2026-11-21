@@ -44,6 +44,8 @@ export default function SystemSettingsPage() {
   const [chatAutoTitleEnabled, setChatAutoTitleEnabled] = React.useState(false);
   const [savingIntelligence, setSavingIntelligence] = React.useState(false);
   const [trafficCapture, setTrafficCapture] = React.useState(false);
+  const [trafficExcludeInput, setTrafficExcludeInput] = React.useState("");
+  const [savedTrafficExclude, setSavedTrafficExclude] = React.useState("");
   const [browserScreenshot, setBrowserScreenshot] = React.useState(false);
   const [browserScreenshotTimestamp, setBrowserScreenshotTimestamp] = React.useState(false);
   const [opsecEnabled, setOpsecEnabled] = React.useState(false);
@@ -126,6 +128,8 @@ export default function SystemSettingsPage() {
     setTaskAutoTitleEnabled(!!s.task_auto_title_enabled);
     setChatAutoTitleEnabled(!!s.chat_auto_title_enabled);
     setTrafficCapture(!!s.traffic_capture);
+    setTrafficExcludeInput(s.traffic_exclude_hosts ?? "");
+    setSavedTrafficExclude(s.traffic_exclude_hosts ?? "");
     setBrowserScreenshot(!!s.browser_screenshot_enabled);
     setBrowserScreenshotTimestamp(!!s.browser_screenshot_timestamp_enabled);
     setOpsecEnabled(!!s.opsec_enabled);
@@ -275,6 +279,18 @@ export default function SystemSettingsPage() {
         clearEgressReport();
       })
       .catch(() => setTrafficCapture(!v)) // revert on failure
+      .finally(() => setSaving(false));
+  };
+
+  const saveTrafficExclude = () => {
+    setSaving(true);
+    api
+      .setSettings({ traffic_exclude_hosts: trafficExcludeInput })
+      .then((s) => {
+        apply(s);
+        toast.success(t("settings.trafficExcludeSaved"));
+      })
+      .catch((e) => toast.error(t("settings.saveFailed", { message: localizedError(e, t) })))
       .finally(() => setSaving(false));
   };
 
@@ -787,16 +803,46 @@ export default function SystemSettingsPage() {
                   {t("settings.trafficCaptureOffEnd")}
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex items-center justify-between gap-4">
-                <Label htmlFor="traffic-capture" className="text-sm font-normal text-muted-foreground">
-                  {trafficCapture ? t("settings.captureOn") : t("settings.captureOff")}
-                </Label>
-                <Switch
-                  id="traffic-capture"
-                  checked={trafficCapture}
-                  disabled={!loaded || saving}
-                  onCheckedChange={toggleTraffic}
-                />
+              <CardContent className="flex flex-col gap-4">
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor="traffic-capture" className="text-sm font-normal text-muted-foreground">
+                    {trafficCapture ? t("settings.captureOn") : t("settings.captureOff")}
+                  </Label>
+                  <Switch
+                    id="traffic-capture"
+                    checked={trafficCapture}
+                    disabled={!loaded || saving}
+                    onCheckedChange={toggleTraffic}
+                  />
+                </div>
+                <Field>
+                  <FieldLabel htmlFor="traffic-exclude" className="text-sm font-normal text-muted-foreground">
+                    {t("settings.trafficExcludeHosts")}
+                  </FieldLabel>
+                  <Textarea
+                    id="traffic-exclude"
+                    rows={3}
+                    value={trafficExcludeInput}
+                    disabled={!settingsLoaded || saving}
+                    placeholder={t("settings.trafficExcludePlaceholder")}
+                    onChange={(e) => setTrafficExcludeInput(e.target.value)}
+                    className="font-mono text-xs"
+                  />
+                  <FieldDescription className="text-xs">{t("settings.trafficExcludeHelp")}</FieldDescription>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={saveTrafficExclude}
+                      disabled={!settingsLoaded || saving || trafficExcludeInput === savedTrafficExclude}
+                    >
+                      {saving ? t("settings.saving") : t("settings.save")}
+                    </Button>
+                    {trafficExcludeInput !== savedTrafficExclude && (
+                      <span className="text-xs text-muted-foreground">{t("settings.unsavedTrafficExclude")}</span>
+                    )}
+                  </div>
+                </Field>
               </CardContent>
             </Card>
 

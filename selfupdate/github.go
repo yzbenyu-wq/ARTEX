@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -117,40 +118,75 @@ func checkURL(u *url.URL) error {
 	return nil
 }
 
+// FetchError 是查询发布源失败时带分类的错误，供前端按原因给出可操作提示。
+// 直接比较错误文本既脆弱又会把局部改动扩散到 UI，故用类型携带分类。
+type FetchError struct {
+	Kind string
+	Err  error
+}
+
+func (e *FetchError) Error() string { return e.Err.Error() }
+func (e *FetchError) Unwrap() error { return e.Err }
+
+// 分类取值；前端 settings.updateErrorHint* 文案与之一一对应。
+const (
+	FetchKindNetwork   = "network"          // 连不上 GitHub（离线/内网/DNS/代理不通）
+	FetchKindRateLimit = "rate_limited"     // GitHub 未认证接口限流
+	FetchKindNotFound  = "not_found"        // 仓库不可访问或没有正式发布版本
+	FetchKindSecurity  = "security"         // 地址未通过 https/域名白名单校验
+	FetchKindHTTP      = "http"             // 其他非 200 响应
+	FetchKindInvalid   = "invalid_response" // 响应无法解析
+)
+
+// KindOf 返回 FetchLatest 失败的分类；成功返回空串，非分类错误归为 "other"。
+func KindOf(err error) string {
+	if err == nil {
+		return ""
+	}
+	var fe *FetchError
+	if errors.As(err, &fe) {
+		return fe.Kind
+	}
+	return "other"
+}
+
 // FetchLatest 查询最新正式版。
 func FetchLatest(ctx context.Context, c *http.Client) (*Release, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, &FetchError{Kind: FetchKindInvalid, Err: err}
 	}
 	if err := checkURL(req.URL); err != nil {
-		return nil, err
+		return nil, &FetchError{Kind: FetchKindSecurity, Err: err}
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	httpidentity.Apply(req)
 
 	resp, err := c.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("访问 GitHub 失败（可在版本与更新中配置更新代理）: %w", err)
+		return nil, &FetchError{
+			Kind: FetchKindNetwork,
+			Err:  fmt.Errorf("访问 GitHub 失败（可在版本与更新中配置更新代理）: %w", err),
+		}
 	}
 	defer resp.Body.Close()
 
 	switch {
 	case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusTooManyRequests:
 		// 未认证的 GitHub API 是每 IP 每小时 60 次，共用出口 IP 时很容易撞上。
-		return nil, fmt.Errorf("GitHub 接口限流（每小时 60 次），请稍后再试")
+		return nil, &FetchError{Kind: FetchKindRateLimit, Err: fmt.Errorf("GitHub 接口限流（每小时 60 次），请稍后再试")}
 	case resp.StatusCode == http.StatusNotFound:
-		return nil, fmt.Errorf("仓库 %s 不可访问或尚未发布正式版本", Repo)
+		return nil, &FetchError{Kind: FetchKindNotFound, Err: fmt.Errorf("仓库 %s 不可访问或尚未发布正式版本", Repo)}
 	case resp.StatusCode != http.StatusOK:
-		return nil, fmt.Errorf("GitHub 返回 %d", resp.StatusCode)
+		return nil, &FetchError{Kind: FetchKindHTTP, Err: fmt.Errorf("GitHub 返回 %d", resp.StatusCode)}
 	}
 
 	var rel Release
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return nil, fmt.Errorf("解析 Release 失败: %w", err)
+		return nil, &FetchError{Kind: FetchKindInvalid, Err: fmt.Errorf("解析 Release 失败: %w", err)}
 	}
 	if strings.TrimSpace(rel.TagName) == "" {
-		return nil, fmt.Errorf("Release 缺少 tag")
+		return nil, &FetchError{Kind: FetchKindInvalid, Err: fmt.Errorf("Release 缺少 tag")}
 	}
 	return &rel, nil
 }

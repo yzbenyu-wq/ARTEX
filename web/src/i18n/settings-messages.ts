@@ -119,6 +119,17 @@ export const settingsMessages = {
     "mcp server access token agent orchestration external bot audit allowlist whitelist source ip",
   ],
   "settings.trafficCapture": ["流量捕获", "Traffic capture"],
+  "settings.trafficExcludeHosts": ["不捕获的主机", "Hosts excluded from capture"],
+  "settings.trafficExcludeHelp": [
+    "每行一个主机，支持 * 通配（如 *.debian.org）；留空表示不排除任何主机。命中的请求仍走代理，但不会写入流量记录；只影响之后的新请求，已捕获的记录不变。",
+    "One host per line; * wildcards are supported (e.g. *.debian.org); leave empty to exclude nothing. Matching requests still use the proxy but are not recorded. Only affects new requests; existing captures are kept.",
+  ],
+  "settings.trafficExcludePlaceholder": [
+    "例如：\ndeb.debian.org\n*.example.com",
+    "For example:\ndeb.debian.org\n*.example.com",
+  ],
+  "settings.trafficExcludeSaved": ["不捕获主机列表已保存", "Capture exclusion list saved"],
+  "settings.unsavedTrafficExclude": ["修改尚未保存。", "Unsaved changes."],
   "settings.trafficCaptureHelp": [
     "开启后，所有 Agent 的 HTTP 流量经记录代理全量落库，并向 Agent 注入 traffic_search / traffic_get 工具与代理配置（提示词含代理说明）。",
     "When enabled, all Agent HTTP traffic is recorded through the capture proxy. Agents receive traffic_search / traffic_get tools and proxy settings, including proxy instructions.",
@@ -659,6 +670,22 @@ export const settingsMessages = {
   "settings.retryUpdateNetwork": [
     "可配置更新代理或切换为直连后重试。",
     "Configure an update proxy or switch to a direct connection and try again.",
+  ],
+  "settings.updateErrorHintGeneric": [
+    "可配置更新代理或切换为直连后重试。",
+    "Configure an update proxy or switch to a direct connection and try again.",
+  ],
+  "settings.updateErrorHintRateLimited": [
+    "GitHub 接口已限流（每小时 60 次），请稍后再试。",
+    "The GitHub API is rate limited (60 requests per hour). Please try again later.",
+  ],
+  "settings.updateErrorHintSecurity": [
+    "更新地址未通过安全检查，请检查更新代理配置。",
+    "The update URL failed the security check. Check the update proxy configuration.",
+  ],
+  "settings.updateErrorHintNotFound": [
+    "仓库 {{repo}} 尚无可访问的正式发布版本，一键更新不可用；请关注发布页或手动更新。",
+    "Repository {{repo}} has no accessible official release, so one-click updates are unavailable. Watch the releases page or update manually.",
   ],
   "settings.missingPackageStart": ["没有提供", " does not provide a package for "],
   "settings.missingPackageMiddle": ["的发布包（缺少", " (missing "],

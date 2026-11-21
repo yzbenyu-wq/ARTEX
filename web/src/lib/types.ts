@@ -984,6 +984,8 @@ export interface TrafficHost {
 // ---- App settings (runtime toggles) ----
 export interface Settings {
   traffic_capture: boolean;
+  /** 不抓取的主机（每行一个，支持 * 通配）。仅过滤之后的新请求。 */
+  traffic_exclude_hosts?: string;
   /** 是否向可见 Agent 暴露浏览器 MCP 的截图工具。默认关闭。 */
   browser_screenshot_enabled?: boolean;
   /** 是否在报告截图右上角显示截图保存时间。默认关闭。 */
@@ -1768,6 +1770,8 @@ export interface UpdateCheck {
   rolled_back?: boolean;
   /** 查询 GitHub 失败时给出原因，此时下面的字段都不会有。 */
   error?: string;
+  /** 失败分类：network/rate_limited/not_found/security/http/invalid_response/other。 */
+  error_kind?: "network" | "rate_limited" | "not_found" | "security" | "http" | "invalid_response" | "other";
   latest?: string;
   notes?: string;
   html_url?: string;

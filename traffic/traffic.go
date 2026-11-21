@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -172,6 +173,11 @@ type Traffic struct {
 	upstream        atomic.Pointer[url.URL]
 	upstreamMu      sync.RWMutex
 	upstreamFailure func(error)
+	// excludePatterns 是不落库的主机名单（小写，支持 path.Match 通配）。
+	// 抓包代理照样转发请求，只是不把它记进索引——用于过滤环境自身的包管理器、
+	// 健康检查等噪音。空表示不过滤。
+	excludeMu       sync.RWMutex
+	excludePatterns []string
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -338,6 +344,78 @@ func (t *Traffic) SetUpstreamFailureHandler(fn func(error)) {
 	t.upstreamMu.Unlock()
 }
 
+// ParseExcludeHosts splits a raw settings value (newline- or comma-separated)
+// into normalized host patterns and validates them. Patterns are matched
+// case-insensitively with path.Match semantics, so "*.debian.org" excludes every
+// subdomain while "deb.debian.org" excludes exactly that host.
+func ParseExcludeHosts(raw string) ([]string, error) {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(fields))
+	seen := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		p := strings.ToLower(strings.TrimSpace(f))
+		if p == "" {
+			continue
+		}
+		if strings.ContainsAny(p, " /\\") {
+			return nil, fmt.Errorf("主机模式 %q 不能包含空格或路径", p)
+		}
+		if strings.HasPrefix(p, ".") || strings.HasSuffix(p, ".") {
+			return nil, fmt.Errorf("主机模式 %q 格式无效", p)
+		}
+		if _, err := path.Match(p, "example.com"); err != nil {
+			return nil, fmt.Errorf("主机模式 %q 格式无效", p)
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// SetExcludeHosts replaces the list of hosts whose exchanges are proxied but not
+// recorded. Takes effect on the next request; already-captured traffic is kept.
+func (t *Traffic) SetExcludeHosts(patterns []string) {
+	clean := make([]string, 0, len(patterns))
+	for _, p := range patterns {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p != "" {
+			clean = append(clean, p)
+		}
+	}
+	t.excludeMu.Lock()
+	t.excludePatterns = clean
+	t.excludeMu.Unlock()
+}
+
+// ExcludeHosts returns the current exclusion list (for settings echo).
+func (t *Traffic) ExcludeHosts() []string {
+	t.excludeMu.RLock()
+	defer t.excludeMu.RUnlock()
+	return append([]string(nil), t.excludePatterns...)
+}
+
+func (t *Traffic) hostExcluded(host string) bool {
+	t.excludeMu.RLock()
+	defer t.excludeMu.RUnlock()
+	if len(t.excludePatterns) == 0 {
+		return false
+	}
+	host = strings.ToLower(host)
+	for _, p := range t.excludePatterns {
+		if p == host {
+			return true
+		}
+		if ok, _ := path.Match(p, host); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *Traffic) reportUpstreamFailure(err error) {
 	if err == nil || t.upstream.Load() == nil {
 		return
@@ -478,11 +556,16 @@ func proxyCausedErr(err error) bool {
 // full-text index. Nothing is written to a per-request directory — only bodies
 // above maxInlineBody spill to the content-addressed blob store.
 func (t *Traffic) record(f *mproxy.Flow) {
+	host := f.Request.URL.Hostname()
+	// 排除主机照样走代理，只是不落库：环境自身的 apt/pip、健康检查等噪音
+	// 不应该混进任务证据。判断放在写锁前，避免噪音请求和删除操作抢锁。
+	if t.hostExcluded(host) {
+		return
+	}
 	// The write lock covers blob + index writes, so DeleteHost (and its blob GC)
 	// can run under the same lock without racing a concurrent record.
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
-	host := f.Request.URL.Hostname()
 	method := f.Request.Method
 	tmpl := db.TemplatePath(f.Request.URL.EscapedPath())
 	n := t.seq.Add(1)
