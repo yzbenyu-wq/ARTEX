@@ -1,11 +1,12 @@
 ---
-
-## name: scopesentry-mcp
-description: 通过 ScopeSentry MCP 管理安全扫描平台（项目、任务、模板、资产、节点）。在用户提到 ScopeSentry、MCP、API Key、扫描任务、资产查询时使用。
+name: scopesentry
+description: 通过 ScopeSentry MCP 查询项目、任务与资产。提到 ScopeSentry、资产查询、扫描任务时使用。
+mcps: ScopeSentry
+---
 
 # ScopeSentry MCP 使用指南
 
-面向**已部署 ScopeSentry 实例**的用户。通过 Cursor（或其他 MCP 客户端）连接平台，无需本地源码。
+面向**已部署 ScopeSentry 实例**的 ARTEX 任务。工具由 ARTEX 的 `ScopeSentry` MCP 提供，模型直接调用即可，不需要配置任何客户端。
 
 ## 1. 准备工作
 
@@ -20,26 +21,20 @@ description: 通过 ScopeSentry MCP 管理安全扫描平台（项目、任务�
 2. 进入 **API Key** 管理页创建密钥（或通过管理员提供的接口创建）
 3. 保存返回的 `ssk_...` 字符串（**仅显示一次**）
 
-### 1.3 配置 Cursor MCP
+### 1.3 在 ARTEX 中启用
 
-Cursor → Settings → MCP → 添加服务器：
+以下配置由操作员在网页完成一次，模型不要重复配置，也不要尝试修改客户端设置：
 
-```json
-{
-  "mcpServers": {
-    "scopesentry": {
-      "url": "http://<你的主机>:8082/mcp",
-      "headers": {
-        "X-API-Key": "ssk_你的密钥"
-      }
-    }
-  }
-}
-```
+1. `系统 → MCP` → 选中 `ScopeSentry`
+2. 传输选 `http`，URL 填 `http://<主机>:8082/mcp`
+3. 环境变量填一行 `X-API-Key=ssk_你的密钥`
+4. 启用 → 刷新工具，确认工具列表出现 `list_projects`、`list_assets` 等
 
-也可使用：`Authorization: Bearer ssk_你的密钥`
+本技能声明了 `mcps: ScopeSentry`：工具在**本技能加载后**才解锁，平时不占提示词。调用时的工具名形如 `mcp__ScopeSentry__list_projects`，以 MCP 页刷新出的名称为准。
 
-配置完成后重启 MCP 或重载 Cursor，确认工具列表中出现 `list_projects`、`list_assets` 等。
+**使用边界**：`create_project`、`create_scan_template`、`create_scan_task`、`add_asset_tag` 属于写操作，只有操作员明确要求且目标在任务授权范围内时才可调用；不得为了“多找资产”自行扩大扫描范围。
+
+需要把大批资产导入 ARTEX 资产库时，优先让操作员走 `功能 → 资产同步`，不要用模型逐页拉取再转存。
 
 ---
 
@@ -355,7 +350,8 @@ JSON 对象：同 key 多个值为 **OR**，不同 key 为 **AND**。
 
 | 现象        | 处理                                                 |
 | --------- | -------------------------------------------------- |
-| MCP 无工具   | 检查 URL、API Key、ScopeSentry 是否运行                    |
+| MCP 无工具   | `系统 → MCP` 检查 `ScopeSentry` 是否启用、URL 是否以 `/mcp` 结尾、`X-API-Key` 是否已填；改完点“刷新工具” |
+| 会话里看不到工具 | 先加载本技能：`mcps: ScopeSentry` 会在技能加载后解锁工具 |
 | 401 / 403 | 重新创建或更换 API Key                                    |
 | 资产查不到     | 确认 `filter.project` 为 ObjectID；勿在 search 写 project |
 | 模板/任务创建失败 | `template` 必须是模板 ObjectID；`node` 填在线节点名            |
