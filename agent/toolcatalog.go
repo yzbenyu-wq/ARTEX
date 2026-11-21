@@ -40,14 +40,16 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 		// goals（目标拆解器）默认绑 set_goals + set_constraints：靠它们把拆出的目标、
 		// 抽出的操作约束写进库。与 mainagent 共用同一受管工具，web 端可改描述/schema、按 agent 勾选。
 		"goals": {ts.setGoals(), ts.setConstraints()},
-		// auto 默认绑漏洞上报 + 资产管理工具，其他域工具可在 UI 按需勾选。
-		// 新库由此 seed 写入；老库由 seedAutoDefaultBindings 迁移。
-		"auto": {ts.addFinding(), ts.insertAssets(), ts.addCompanyScope(), ts.listAssets(), ts.listCompanies()},
+		// auto 默认绑资产管理工具，其他域工具可在 UI 按需勾选。report_finding/
+		// list_findings 刻意不绑：它们依赖任务探索图，chat 里没有任务上下文，绑了也只会报错。
+		// 新库由此 seed 写入；老库由 seedAutoDefaultBindings / seedChatAgentToolBindings 迁移。
+		"auto": {ts.insertAssets(), ts.addCompanyScope(), ts.listAssets(), ts.listCompanies()},
 		// asset_mapper 只读资产库，供资产梳理和拓扑解释使用。
 		"asset_mapper": {ts.listAssets(), ts.listCompanies()},
-		// pentest（独立渗透 agent）默认绑：查资产 / 插资产 / 报漏洞 / 查漏洞 / 查企业。
-		// 新库由此 seed 写入；老库由 seedPentestDefaultBindings 迁移。
-		"pentest": {ts.listAssets(), ts.insertAssets(), ts.addFinding(), ts.listFindings(), ts.listCompanies()},
+		// pentest（独立渗透 agent）在 chat 页单独运行，没有任务探索图，故只绑不依赖
+		// ToolSet.ts 的资产工具；漏洞经 list_tasks + add_task_hint 交接给目标任务登记
+		// （见 promptcatalog 的 pentest 模板与 seedChatAgentToolBindings）。
+		"pentest": {ts.listAssets(), ts.insertAssets(), ts.listCompanies()},
 	}
 }
 

@@ -523,12 +523,18 @@ func (s *Server) deriveTaskStatus(t *Task) string {
 // agents). First-insert only, like the traffic seeds.
 func (s *Server) seedOrchestrationTools() {
 	// task-op + platform tools default-bind to the built-in Auto agent (它天生用来
-	// 操作平台)。SeedTool 首插入生效;老库已 seed 的行由 seedAutoDefaultBindings 补绑。
+	// 操作平台)。list_tasks / add_task_hint 额外默认给 pentest：它在 chat 页无法用
+	// report_finding 登记漏洞，二者是它把漏洞交接给目标任务的唯一通道。
+	// SeedTool 首插入生效;老库已 seed 的行由 seedAutoDefaultBindings 补绑。
 	autoAgents, _ := json.Marshal([]string{"auto"})
+	handoffAgents := json.RawMessage(`["auto","pentest"]`)
 	for _, t := range s.orchestrationTools() {
 		schema, _ := json.Marshal(t.InputSchema())
 		bindings := autoAgents
-		if t.Name() == "bind_finding_traffic" || strings.Contains(t.Name(), "finding_case") || t.Name() == "search_finding_duplicates" || t.Name() == "get_finding_record" || t.Name() == "merge_finding_records" || t.Name() == "suggest_finding_merge" {
+		switch {
+		case t.Name() == "list_tasks" || t.Name() == "add_task_hint":
+			bindings = handoffAgents
+		case t.Name() == "bind_finding_traffic" || strings.Contains(t.Name(), "finding_case") || t.Name() == "search_finding_duplicates" || t.Name() == "get_finding_record" || t.Name() == "merge_finding_records" || t.Name() == "suggest_finding_merge":
 			bindings = json.RawMessage(`["reporter"]`)
 		}
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, bindings)
@@ -544,7 +550,6 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedCompanyScopeRebind()
 	s.seedWorkerReadToolsUnbind() // list_facts/list_companies/list_worker_traces 从 worker 默认解绑(一次性)
 	s.seedWorkerReadbackRebind()  // 修复旧迁移误删：把 search_all_worker_traces/get_worker_trace/node_detail 补绑回 worker(一次性)
-	s.seedAutoReportFindingBinding()
 	s.unbindGoalMetDefault()
 	s.reseedGoalsPrompt()             // goals 提示词加入「抽操作约束」步 → 旧库追加一版新默认(一次性)
 	s.reseedMainAgentPrompt()         // mainagent 提示词加入「目标达成后 add_intent 反问是否建目标」(一次性)
@@ -563,9 +568,11 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedFindingTrafficTools() // 增加可选证据参数及只读证据工具，保留用户配置
 	s.seedFindingWorkflowTools()
 	s.seedFindingCaseTools()
-	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
-	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
-	// pentest 一起 seed 好了（项目尚无旧库，不做迁移）。
+	// 放在 finding 系列迁移之后：它们会改写 traffic/get_finding_traffic 的绑定，
+	// chat agent 的最终绑定形状必须在它们之后收敛(一次性)。
+	s.seedChatAgentToolBindings()
+	s.reseedPentestChatPrompt()
+	s.reseedAutoPromptToolName()
 }
 
 // migrateReporterWorkflow repairs databases created by the short-lived
@@ -894,18 +901,110 @@ func (s *Server) seedReporterAgent() {
 	log.Printf("[reporter] 已预置「报告撰写」agent + finding 触发器")
 }
 
-// seedAutoReportFindingBinding adds "auto" to report_finding's binding ONCE so
-// conversation-context agents can call it without requiring an intent_id.
-func (s *Server) seedAutoReportFindingBinding() {
-	const flag = "auto_report_finding_v1"
+// seedChatAgentToolBindings aligns the chat-page agents' tool bindings ONCE on
+// existing DBs (guarded by a settings flag). report_finding / list_findings need a
+// task's exploration graph (ToolSet.ts), and a chat turn has no task context, so
+// those bindings only ever produced errors; the pentest/auto prompt now hands
+// confirmed findings to a task via add_task_hint instead. The same pass adds the
+// handoff readers and traffic readers the pentest prompt relies on, plus
+// get_finding_traffic for the retester (it re-reads bound evidence when writing a
+// retest summary). Fresh DBs get the same shape from BuiltinToolSeeds +
+// seedOrchestrationTools + seedFindingWorkflowTools; this closes the gap on old DBs.
+// One-shot + flag-guarded so a user who later re-binds these tools isn't overridden.
+func (s *Server) seedChatAgentToolBindings() {
+	const flag = "chat_agent_tool_bindings_v1"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
-	if err := s.m.pg.AddAgentToToolBinding("auto", []string{"report_finding"}); err != nil {
-		log.Printf("[auto] report_finding 默认绑定失败: %v", err)
+	for _, key := range []string{"report_finding", "list_findings"} {
+		if err := s.m.pg.RemoveAgentFromTool("pentest", key); err != nil {
+			log.Printf("[pentest] %s 解绑失败: %v", key, err)
+			return // 出错则不落 flag，下次启动重试
+		}
+	}
+	if err := s.m.pg.RemoveAgentFromTool("auto", "report_finding"); err != nil {
+		log.Printf("[auto] report_finding 解绑失败: %v", err)
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("pentest", []string{
+		"add_task_hint", "list_tasks", "traffic_search", "traffic_get", "traffic_blob",
+		"get_finding_traffic",
+	}); err != nil {
+		log.Printf("[pentest] 交接/流量工具绑定失败: %v", err)
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("retester", []string{"get_finding_traffic"}); err != nil {
+		log.Printf("[retester] get_finding_traffic 绑定失败: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
+}
+
+// reseedPentestChatPrompt upgrades the pentest prompt ONCE on existing DBs that
+// still carry the old default text telling the agent to call report_finding /
+// list_findings, which cannot work without a task graph. Only the exact legacy
+// default is replaced — a user-edited prompt survives (the old version stays in
+// prompt history).
+func (s *Server) reseedPentestChatPrompt() {
+	const flag = "pentest_prompt_chat_handoff_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	a, err := s.m.pg.GetAgentByKey("pentest")
+	if err != nil || a == nil {
+		return // 全新库由 seedPrompts 直接 seed 最新默认
+	}
+	cur, err := s.m.pg.CurrentPrompt(a.ID)
+	if err != nil {
+		return
+	}
+	const legacy = "回看已报漏洞用 list_findings"
+	if !strings.Contains(cur, legacy) {
+		_ = s.m.pg.SetSetting(flag, "true") // 已是新默认或被用户改过，不再动
+		return
+	}
+	tmpl := agent.BuiltinPromptSeeds()["pentest"]
+	if tmpl == "" {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("[prompts] pentest 提示词迁移失败: %v", err)
+		return
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+	log.Printf("[prompts] pentest 提示词已切到 chat 交接版(add_task_hint,一次性)")
+}
+
+// reseedAutoPromptToolName fixes the auto prompt ONCE on existing DBs that still
+// name the nonexistent update_skill tool. Same guard rules as reseedPentestChatPrompt.
+func (s *Server) reseedAutoPromptToolName() {
+	const flag = "auto_prompt_tool_name_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	a, err := s.m.pg.GetAgentByKey("auto")
+	if err != nil || a == nil {
+		return
+	}
+	cur, err := s.m.pg.CurrentPrompt(a.ID)
+	if err != nil {
+		return
+	}
+	const legacy = "create_skill / update_skill 建改技能"
+	if !strings.Contains(cur, legacy) {
+		_ = s.m.pg.SetSetting(flag, "true")
+		return
+	}
+	tmpl := agent.BuiltinPromptSeeds()["auto"]
+	if tmpl == "" {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("[prompts] auto 提示词迁移失败: %v", err)
+		return
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+	log.Printf("[prompts] auto 提示词已修正工具名 update_skill_file(一次性)")
 }
 
 // seedPlannerDefaultBindings adds "planner" to report_finding's binding ONCE
