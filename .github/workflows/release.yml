@@ -21,23 +21,22 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      image: ${{ steps.image.outputs.image }}
       commit: ${{ steps.commit.outputs.sha }}
     steps:
       - name: Validate release version
         id: version
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          ARTEX_DOCKER_IMAGE: ${{ vars.ARTEX_DOCKER_IMAGE }}
         run: |
           if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "正式版本必须是 v主版本.次版本.修订号，例如 v0.3.15" >&2
             exit 1
           fi
-          if [[ ! "$ARTEX_DOCKER_IMAGE" =~ ^[a-z0-9][a-z0-9_-]*/[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
-            echo "请先配置 Actions 变量 ARTEX_DOCKER_IMAGE，格式为 Docker Hub 用户名/镜像名" >&2
-            exit 1
-          fi
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Resolve GHCR image
+        id: image
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/artex" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           ref: refs/tags/${{ steps.version.outputs.tag }}
@@ -174,7 +173,7 @@ jobs:
             dist/SHA256SUMS
           generate_release_notes: true
           body: |
-            Docker Hub 镜像：`${{ vars.ARTEX_DOCKER_IMAGE }}:${{ needs.prepare.outputs.tag }}`，同时提供 `latest`。
+            Docker 镜像：`${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}`，同时提供 `latest`。
             支持 Linux AMD64 / ARM64，Docker 会自动选择宿主机架构。
             程序包提供 Linux、macOS 的 AMD64 / ARM64 及 Windows AMD64，并附 SHA256SUMS。
             部署和在线更新说明见本仓库 README。
@@ -195,6 +194,9 @@ jobs:
   # ④ 在原生 AMD64 / ARM64 runner 上构建和测试，再推送架构镜像。
   docker:
     needs: [prepare, binaries]
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -225,8 +227,9 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
       - name: Build image for native smoke test
         uses: docker/build-push-action@v6
         with:
@@ -263,7 +266,7 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ${{ vars.ARTEX_DOCKER_IMAGE }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          tags: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.tag }}
@@ -275,15 +278,19 @@ jobs:
   docker-publish:
     needs: [prepare, docker]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
       - name: Publish multi-platform image
         env:
-          IMAGE: ${{ vars.ARTEX_DOCKER_IMAGE }}
+          IMAGE: ${{ needs.prepare.outputs.image }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           docker buildx imagetools create \

@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 新增与改进
+
+- 程序在线更新源由 `RuoJi6/ARTEX` 改为 `yzbenyu-wq/ARTEX`，在线更新仅从本仓库已发布的正式 Release 拉取程序包与 `SHA256SUMS`。
+- Docker 镜像改由本仓库 GitHub Actions 推送到 GitHub Container Registry 的 `ghcr.io/yzbenyu-wq/artex`，使用工作流内置 `GITHUB_TOKEN`，无需 Docker Hub 账号或额外密钥。
+
 ## [0.3.30] - 2026-11-14
 
 ### 新增与改进
