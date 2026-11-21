@@ -972,8 +972,21 @@ CREATE TABLE IF NOT EXISTS tools (
     kind        TEXT    NOT NULL DEFAULT 'builtin',
     exec        JSONB   NOT NULL DEFAULT '{}',
     deferred    BOOLEAN NOT NULL DEFAULT false,
+    category    TEXT    NOT NULL DEFAULT '',
+    "binary"    TEXT    NOT NULL DEFAULT '',
+    proxy_mode  TEXT    NOT NULL DEFAULT 'inherit',
+    source      TEXT    NOT NULL DEFAULT '',
+    version_cmd TEXT    NOT NULL DEFAULT '',
+    homepage    TEXT    NOT NULL DEFAULT '',
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS category    TEXT NOT NULL DEFAULT '';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS "binary"    TEXT NOT NULL DEFAULT '';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS proxy_mode  TEXT NOT NULL DEFAULT 'inherit';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS source      TEXT NOT NULL DEFAULT '';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS version_cmd TEXT NOT NULL DEFAULT '';
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS homepage    TEXT NOT NULL DEFAULT '';
+UPDATE tools SET source = CASE WHEN system THEN 'builtin' ELSE 'custom' END WHERE source = '';
 DROP TRIGGER IF EXISTS trg_tools_upd ON tools;
 CREATE TRIGGER trg_tools_upd BEFORE UPDATE ON tools
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

@@ -1,7 +1,17 @@
 "use client";
 import * as React from "react";
 
-import { PlayIcon, PlusIcon, RotateCcwIcon, SaveIcon, SearchIcon, Trash2Icon } from "lucide-react";
+import {
+  BoxesIcon,
+  DownloadIcon,
+  PlayIcon,
+  PlusIcon,
+  RotateCcwIcon,
+  SaveIcon,
+  SearchIcon,
+  Trash2Icon,
+  UploadIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -18,11 +28,110 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useUITranslation } from "@/i18n/use-ui-translation";
 import { api } from "@/lib/api";
-import type { Agent, Tool } from "@/lib/types";
+import type { Agent, Tool, ToolPreset, ToolProxyMode, ToolStatus } from "@/lib/types";
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
 // only usable when capture is on. Keep in sync with traffic.SeedToolMetas.
 const TRAFFIC_TOOL_KEYS = new Set(["traffic_search", "traffic_get"]);
+
+type ToolMetaState = {
+  category: string;
+  binary: string;
+  proxyMode: ToolProxyMode;
+  versionCmd: string;
+  homepage: string;
+};
+
+const EMPTY_TOOL_META: ToolMetaState = {
+  category: "",
+  binary: "",
+  proxyMode: "inherit",
+  versionCmd: "",
+  homepage: "",
+};
+
+function toolMetaFrom(tool: Tool): ToolMetaState {
+  return {
+    category: tool.category ?? "",
+    binary: tool.binary ?? "",
+    proxyMode: (tool.proxy_mode as ToolProxyMode | undefined) ?? "inherit",
+    versionCmd: tool.version_cmd ?? "",
+    homepage: tool.homepage ?? "",
+  };
+}
+
+// ToolMetaFields is shared by the built-in and custom editors so both surfaces
+// store the same toolbox metadata.
+function ToolMetaFields({
+  meta,
+  onChange,
+}: {
+  meta: ToolMetaState;
+  onChange: (patch: Partial<ToolMetaState>) => void;
+}) {
+  const { ui } = useUITranslation();
+  return (
+    <div className="grid gap-3 rounded-md border p-3">
+      <div>
+        <Label className="text-xs font-medium">{ui("screen.toolboxMeta")}</Label>
+        <p className="text-muted-foreground text-[11px]">{ui("screen.toolboxMetaHint")}</p>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-1.5">
+          <Label className="text-muted-foreground text-[11px]">{ui("screen.toolboxCategory")}</Label>
+          <Input
+            className="text-xs"
+            placeholder="recon / web / vuln / utility"
+            value={meta.category}
+            onChange={(e) => onChange({ category: e.target.value })}
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label className="text-muted-foreground text-[11px]">{ui("screen.toolboxBinary")}</Label>
+          <Input
+            className="font-mono text-xs"
+            placeholder="httpx"
+            value={meta.binary}
+            onChange={(e) => onChange({ binary: e.target.value })}
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label className="text-muted-foreground text-[11px]">{ui("screen.toolboxProxyMode")}</Label>
+          <Select value={meta.proxyMode} onValueChange={(v) => onChange({ proxyMode: v as ToolProxyMode })}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {["inherit", "none", "http", "socks5", "env", "raw"].map((mode) => (
+                <SelectItem key={mode} value={mode}>
+                  {mode}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="grid gap-1.5">
+          <Label className="text-muted-foreground text-[11px]">{ui("screen.toolboxVersionCmd")}</Label>
+          <Input
+            className="font-mono text-xs"
+            placeholder="httpx -version"
+            value={meta.versionCmd}
+            onChange={(e) => onChange({ versionCmd: e.target.value })}
+          />
+        </div>
+        <div className="grid gap-1.5 sm:col-span-2">
+          <Label className="text-muted-foreground text-[11px]">{ui("screen.toolboxHomepage")}</Label>
+          <Input
+            className="text-xs"
+            placeholder="https://github.com/projectdiscovery/httpx"
+            value={meta.homepage}
+            onChange={(e) => onChange({ homepage: e.target.value })}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // paramRows flattens schema.properties into an ordered row list for editing.
 // name/type/required are read-only (welded to the Go handler); description/default
@@ -146,6 +255,7 @@ function ToolEditor({
   const [description, setDescription] = React.useState(tool.description);
   const [bound, setBound] = React.useState<string[]>(tool.agents);
   const [enabled, setEnabled] = React.useState(tool.enabled);
+  const [meta, setMeta] = React.useState<ToolMetaState>(() => toolMetaFrom(tool));
   const [rows, setRows] = React.useState<ParamRow[]>(() => toRows(tool.schema));
   const [saving, setSaving] = React.useState(false);
 
@@ -161,6 +271,11 @@ function ToolEditor({
         schema: applyRows(tool.schema, rows),
         agents: bound,
         enabled,
+        category: meta.category,
+        binary: meta.binary,
+        proxy_mode: meta.proxyMode,
+        version_cmd: meta.versionCmd,
+        homepage: meta.homepage,
       });
       toast.success(ui("screen.8465f58cd53be3", { v0: tool.key }));
       onSaved();
@@ -220,6 +335,8 @@ function ToolEditor({
             </Label>
           </div>
         </div>
+
+        <ToolMetaFields meta={meta} onChange={(patch) => setMeta((m) => ({ ...m, ...patch }))} />
 
         {/* description */}
         <div className="grid gap-1.5">
@@ -297,8 +414,15 @@ function ToolEditor({
 }
 
 // ToolGridCard is one clickable tile in the catalog grid.
-function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
+function ToolGridCard({ tool, status, onClick }: { tool: Tool; status?: ToolStatus; onClick: () => void }) {
   const { ui } = useUITranslation();
+  const binaryState = tool.binary
+    ? status
+      ? status.installed
+        ? status.version || ui("screen.toolboxInstalled")
+        : ui("screen.toolboxMissing")
+      : ui("screen.toolboxChecking")
+    : "";
 
   return (
     <button
@@ -316,6 +440,21 @@ function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
           <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
             {ui("screen.31f80283afcce3")}
             {tool.kind}
+          </Badge>
+        )}
+        {tool.source === "imported" && (
+          <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+            {ui("screen.toolboxImported")}
+          </Badge>
+        )}
+        {tool.source === "preset" && (
+          <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+            {ui("screen.toolboxPresetSource")}
+          </Badge>
+        )}
+        {tool.category && (
+          <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+            {tool.category}
           </Badge>
         )}
         {tool.deferred && (
@@ -340,6 +479,21 @@ function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
       <p className="text-muted-foreground line-clamp-1 h-4 text-xs">
         {tool.description || ui("screen.0042f188770453")}
       </p>
+      {tool.binary && (
+        <div className="flex flex-wrap items-center gap-1">
+          <Badge
+            variant={status?.installed ? "secondary" : "outline"}
+            className={"px-1.5 py-0 font-mono text-[10px]" + (status && !status.installed ? " text-destructive" : "")}
+          >
+            {tool.binary} · {binaryState}
+          </Badge>
+          {tool.proxy_mode && tool.proxy_mode !== "inherit" && (
+            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+              {ui("screen.5e84ea61e8386a")}: {tool.proxy_mode}
+            </Badge>
+          )}
+        </div>
+      )}
       <div className="mt-auto flex flex-wrap gap-1 pt-1">
         {tool.agents.length === 0 && (
           <span className="text-muted-foreground text-[10px]">{ui("screen.7d97c77ac3183d")}</span>
@@ -359,16 +513,33 @@ export default function ToolsPage() {
 
   const [tools, setTools] = React.useState<Tool[]>([]);
   const [agents, setAgents] = React.useState<Agent[]>([]);
+  const [statuses, setStatuses] = React.useState<Record<string, ToolStatus>>({});
   const [captureOn, setCaptureOn] = React.useState(false);
   const [selectedKey, setSelectedKey] = React.useState<string | null>(null);
   const [customEdit, setCustomEdit] = React.useState<Tool | "new" | null>(null);
+  const [presetsOpen, setPresetsOpen] = React.useState(false);
+  const [importing, setImporting] = React.useState(false);
+  const [checking, setChecking] = React.useState(false);
+  const fileRef = React.useRef<HTMLInputElement>(null);
+
+  const loadStatuses = React.useCallback((withVersions = false) => {
+    api
+      .toolStatus(withVersions)
+      .then((rows) => {
+        const next: Record<string, ToolStatus> = {};
+        for (const row of rows) next[row.key] = row;
+        setStatuses(next);
+      })
+      .catch(() => setStatuses({}));
+  }, []);
 
   const reload = React.useCallback(() => {
     api
       .tools()
       .then(setTools)
       .catch(() => setTools([]));
-  }, []);
+    loadStatuses();
+  }, [loadStatuses]);
   React.useEffect(() => {
     reload();
     api
@@ -382,6 +553,63 @@ export default function ToolsPage() {
   }, [reload]);
 
   const [query, setQuery] = React.useState("");
+
+  async function checkVersions() {
+    setChecking(true);
+    try {
+      await api.toolStatus(true).then((rows) => {
+        const next: Record<string, ToolStatus> = {};
+        for (const row of rows) next[row.key] = row;
+        setStatuses(next);
+      });
+      toast.success(ui("screen.toolboxVersionsChecked"));
+    } catch (e) {
+      toast.error(ui("screen.toolboxStatusFailed") + (e as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function exportTools() {
+    try {
+      const data = await api.exportTools();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `artex-tools-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(ui("screen.toolboxExportFailed") + (e as Error).message);
+    }
+  }
+
+  async function importFile(file: File) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch {
+      toast.error(ui("screen.toolboxInvalidJson"));
+      return;
+    }
+    const list = Array.isArray(parsed) ? parsed : (parsed as { tools?: unknown }).tools;
+    if (!Array.isArray(list)) {
+      toast.error(ui("screen.toolboxInvalidJson"));
+      return;
+    }
+    setImporting(true);
+    try {
+      const result = await api.importTools(list as Partial<Tool>[]);
+      const detail = result.errors.length ? " " + result.errors.slice(0, 3).join("; ") : "";
+      toast.success(ui("screen.toolboxImportDone", { v0: result.imported, v1: result.skipped }) + detail);
+      reload();
+    } catch (e) {
+      toast.error(ui("screen.toolboxImportFailed") + (e as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  }
 
   const selected = tools.find((t) => t.key === selectedKey) ?? null;
   const matchTool = React.useCallback(
@@ -407,17 +635,42 @@ export default function ToolsPage() {
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{ui("screen.5ca6730d441522")}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{ui("screen.toolboxTitle")}</h1>
           <p className="text-muted-foreground text-sm">{ui("screen.070c5bf8a7a0cb")}</p>
         </div>
-        <div className="relative w-64">
-          <SearchIcon className="text-muted-foreground absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2" />
-          <Input
-            className="h-8 pl-8 text-sm"
-            placeholder={ui("screen.2b7665ed985e0a")}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative w-64">
+            <SearchIcon className="text-muted-foreground absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2" />
+            <Input
+              className="h-8 pl-8 text-sm"
+              placeholder={ui("screen.2b7665ed985e0a")}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void importFile(file);
+              e.target.value = "";
+            }}
           />
+          <Button size="sm" variant="outline" onClick={() => setPresetsOpen(true)}>
+            <BoxesIcon /> {ui("screen.toolboxPresets")}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={importing}>
+            <UploadIcon /> {ui("screen.toolboxImport")}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => void exportTools()}>
+            <DownloadIcon /> {ui("screen.toolboxExport")}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => void checkVersions()} disabled={checking}>
+            <RotateCcwIcon /> {checking ? ui("screen.toolboxChecking") : ui("screen.toolboxCheckVersions")}
+          </Button>
         </div>
       </div>
 
@@ -445,7 +698,7 @@ export default function ToolsPage() {
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {systemTools.map((t) => (
-                    <ToolGridCard key={t.key} tool={t} onClick={() => openTool(t)} />
+                    <ToolGridCard key={t.key} tool={t} status={statuses[t.key]} onClick={() => openTool(t)} />
                   ))}
                 </div>
               )}
@@ -478,7 +731,7 @@ export default function ToolsPage() {
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {customTools.map((t) => (
-                    <ToolGridCard key={t.key} tool={t} onClick={() => openTool(t)} />
+                    <ToolGridCard key={t.key} tool={t} status={statuses[t.key]} onClick={() => openTool(t)} />
                   ))}
                 </div>
               )}
@@ -517,11 +770,22 @@ export default function ToolsPage() {
           reload();
         }}
       />
+
+      <PresetPicker
+        open={presetsOpen}
+        onClose={() => setPresetsOpen(false)}
+        onInstalled={() => {
+          setPresetsOpen(false);
+          reload();
+        }}
+      />
     </div>
   );
 }
 
 // ---- 自定义工具编辑器 ----
+
+type CustomKind = "shell" | "command" | "script" | "http" | "recipe";
 
 type ExecState = {
   command: string;
@@ -533,6 +797,24 @@ type ExecState = {
   timeout_ms: string;
   proxy: string;
   use_recording_proxy: boolean;
+  argv: string;
+  stdin: string;
+  allowed_exit_codes: string;
+};
+
+const EMPTY_EXEC_STATE: ExecState = {
+  command: "",
+  code: "",
+  method: "GET",
+  url: "",
+  headers: "",
+  body: "",
+  timeout_ms: "",
+  proxy: "",
+  use_recording_proxy: false,
+  argv: "",
+  stdin: "",
+  allowed_exit_codes: "",
 };
 
 function CustomToolDialog({
@@ -552,18 +834,9 @@ function CustomToolDialog({
   const tool = edit && edit !== "new" ? edit : null;
   const [key, setKey] = React.useState("");
   const [description, setDescription] = React.useState("");
-  const [kind, setKind] = React.useState<"shell" | "command" | "script" | "http">("shell");
-  const [ex, setEx] = React.useState<ExecState>({
-    command: "",
-    code: "",
-    method: "GET",
-    url: "",
-    headers: "",
-    body: "",
-    timeout_ms: "",
-    proxy: "",
-    use_recording_proxy: false,
-  });
+  const [kind, setKind] = React.useState<CustomKind>("shell");
+  const [meta, setMeta] = React.useState<ToolMetaState>(EMPTY_TOOL_META);
+  const [ex, setEx] = React.useState<ExecState>(EMPTY_EXEC_STATE);
   const [schemaText, setSchemaText] = React.useState("");
   const [bound, setBound] = React.useState<string[]>([]);
   const [deferred, setDeferred] = React.useState(false);
@@ -582,17 +855,8 @@ function CustomToolDialog({
       setKey("");
       setDescription("");
       setKind("shell");
-      setEx({
-        command: "",
-        code: "",
-        method: "GET",
-        url: "",
-        headers: "",
-        body: "",
-        timeout_ms: "",
-        proxy: "",
-        use_recording_proxy: false,
-      });
+      setMeta(EMPTY_TOOL_META);
+      setEx(EMPTY_EXEC_STATE);
       setSchemaText("");
       setBound([]);
       setDeferred(false);
@@ -603,7 +867,8 @@ function CustomToolDialog({
     const e = (t.exec ?? {}) as Record<string, unknown>;
     setKey(t.key);
     setDescription(t.description);
-    setKind((t.kind as "shell" | "command" | "script" | "http") ?? "shell");
+    setKind((t.kind as CustomKind) ?? "shell");
+    setMeta(toolMetaFrom(t));
     setEx({
       command: String(e.command ?? ""),
       code: String(e.code ?? ""),
@@ -614,6 +879,9 @@ function CustomToolDialog({
       timeout_ms: e.timeout_ms ? String(e.timeout_ms) : "",
       proxy: String(e.proxy ?? ""),
       use_recording_proxy: !!e.use_recording_proxy,
+      argv: e.argv ? JSON.stringify(e.argv, null, 2) : "",
+      stdin: String(e.stdin ?? ""),
+      allowed_exit_codes: Array.isArray(e.allowed_exit_codes) ? (e.allowed_exit_codes as number[]).join(",") : "",
     });
     setSchemaText(t.schema && Object.keys(t.schema).length ? JSON.stringify(t.schema, null, 2) : "");
     setBound(t.agents ?? []);
@@ -623,11 +891,38 @@ function CustomToolDialog({
 
   const toggleAgent = (k: string) => setBound((b) => (b.includes(k) ? b.filter((x) => x !== k) : [...b, k]));
 
+  // recipe 表单校验：argv 必须是非空 JSON 数组，退出码必须全是整数。
+  function parseRecipeArgv(): unknown[] | null {
+    if (!ex.argv.trim()) return null;
+    try {
+      const v = JSON.parse(ex.argv);
+      return Array.isArray(v) && v.length > 0 ? v : null;
+    } catch {
+      return null;
+    }
+  }
+  function parseRecipeCodes(): number[] | null {
+    const out: number[] = [];
+    for (const t of ex.allowed_exit_codes.split(",").map((s) => s.trim()).filter(Boolean)) {
+      if (!/^\d+$/.test(t)) return null;
+      out.push(Number(t));
+    }
+    return out;
+  }
+
   function buildExec(): Record<string, unknown> {
     if (kind === "shell") return {};
     const t = ex.timeout_ms ? Number(ex.timeout_ms) : undefined;
     if (kind === "command") return { command: ex.command, timeout_ms: t };
     if (kind === "script") return { code: ex.code, timeout_ms: t };
+    if (kind === "recipe") {
+      return {
+        argv: parseRecipeArgv() ?? [],
+        stdin: ex.stdin,
+        timeout_ms: t,
+        allowed_exit_codes: parseRecipeCodes() ?? [],
+      };
+    }
     let headers: Record<string, string> = {};
     if (ex.headers.trim()) {
       try {
@@ -676,6 +971,21 @@ function CustomToolDialog({
         return;
       }
     }
+    if (kind === "recipe") {
+      const props = (schema as { properties?: Record<string, unknown> }).properties;
+      if (!props || Object.keys(props).length === 0) {
+        toast.error(ui("screen.toolboxRecipeSchemaRequired"));
+        return;
+      }
+      if (!parseRecipeArgv()) {
+        toast.error(ui("screen.toolboxRecipeInvalidArgv"));
+        return;
+      }
+      if (!parseRecipeCodes()) {
+        toast.error(ui("screen.toolboxRecipeInvalidExit"));
+        return;
+      }
+    }
     setSaving(true);
     const payload = {
       description,
@@ -685,6 +995,11 @@ function CustomToolDialog({
       kind,
       exec: buildExec(),
       deferred: kind === "shell" ? false : deferred,
+      category: meta.category,
+      binary: meta.binary,
+      proxy_mode: meta.proxyMode,
+      version_cmd: meta.versionCmd,
+      homepage: meta.homepage,
     };
     try {
       if (isNew) await api.createCustomTool({ key: key.trim(), ...payload });
@@ -727,10 +1042,26 @@ function CustomToolDialog({
         return;
       }
     }
+    if (kind === "recipe") {
+      if (!parseRecipeArgv()) {
+        toast.error(ui("screen.toolboxRecipeInvalidArgv"));
+        return;
+      }
+      if (!parseRecipeCodes()) {
+        toast.error(ui("screen.toolboxRecipeInvalidExit"));
+        return;
+      }
+    }
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await api.testCustomTool({ kind, exec: buildExec(), params });
+      const r = await api.testCustomTool({
+        kind,
+        exec: buildExec(),
+        params,
+        proxy_mode: meta.proxyMode,
+        binary: meta.binary,
+      });
       setTestResult(r);
     } catch (e) {
       setTestResult({ output: (e as Error).message, is_error: true });
@@ -770,7 +1101,7 @@ function CustomToolDialog({
 
           <div className="grid gap-1.5">
             <Label className="text-xs">{ui("screen.ba40014ff496f6")}</Label>
-            <Select value={kind} onValueChange={(v) => setKind(v as "shell" | "command" | "script" | "http")}>
+            <Select value={kind} onValueChange={(v) => setKind(v as CustomKind)}>
               <SelectTrigger className="w-56">
                 <SelectValue />
               </SelectTrigger>
@@ -779,10 +1110,13 @@ function CustomToolDialog({
                 <SelectItem value="command">{ui("screen.fcf63aa2fdd22f")}</SelectItem>
                 <SelectItem value="script">{ui("screen.2a97d1c87f3d4d")}</SelectItem>
                 <SelectItem value="http">{ui("screen.f49ce697cf29c0")}</SelectItem>
+                <SelectItem value="recipe">{ui("screen.toolboxKindRecipe")}</SelectItem>
               </SelectContent>
             </Select>
             {kind === "shell" && <p className="text-muted-foreground text-xs">{ui("screen.d8bcec9f7cd637")}</p>}
           </div>
+
+          <ToolMetaFields meta={meta} onChange={(patch) => setMeta((m) => ({ ...m, ...patch }))} />
 
           {kind === "command" && (
             <div className="grid gap-1.5">
@@ -884,6 +1218,40 @@ function CustomToolDialog({
             </div>
           )}
 
+          {kind === "recipe" && (
+            <div className="grid gap-2">
+              <div className="grid gap-1.5">
+                <Label className="text-xs">{ui("screen.toolboxRecipeArgv")}</Label>
+                <Textarea
+                  className="font-mono text-xs"
+                  rows={7}
+                  value={ex.argv}
+                  placeholder={'[\n  ["-silent"],\n  ["-u", "{target}"],\n  ["-p", "{ports}"],\n  ["-proxy", "{proxy}"]\n]'}
+                  onChange={(e) => setEx({ ...ex, argv: e.target.value })}
+                />
+                <p className="text-muted-foreground text-xs">{ui("screen.toolboxRecipeArgvHint")}</p>
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-xs">{ui("screen.toolboxRecipeStdin")}</Label>
+                <Textarea
+                  className="font-mono text-xs"
+                  rows={2}
+                  value={ex.stdin}
+                  onChange={(e) => setEx({ ...ex, stdin: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-xs">{ui("screen.toolboxRecipeAllowedExit")}</Label>
+                <Input
+                  className="font-mono text-xs w-40"
+                  placeholder="0"
+                  value={ex.allowed_exit_codes}
+                  onChange={(e) => setEx({ ...ex, allowed_exit_codes: e.target.value })}
+                />
+              </div>
+            </div>
+          )}
+
           {kind !== "shell" && (
             <div className="flex items-center gap-3">
               <div className="grid gap-1.5">
@@ -902,7 +1270,11 @@ function CustomToolDialog({
             <div className="grid gap-1.5">
               <Label className="text-xs">
                 {ui("screen.7ff6a7d0a41f31")}
-                {kind === "http" ? ui("screen.46f4df9c0d2da9") : ui("screen.84780d91a21684")}
+                {kind === "http"
+                  ? ui("screen.46f4df9c0d2da9")
+                  : kind === "recipe"
+                    ? ui("screen.toolboxRecipeSchemaHint")
+                    : ui("screen.84780d91a21684")}
               </Label>
               <Textarea
                 className="font-mono text-xs"
@@ -977,6 +1349,131 @@ function CustomToolDialog({
               <Trash2Icon /> {ui("screen.2f9daa828907b9")}
             </Button>
           )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+// PresetPicker installs recipes from the server's embedded catalog. Installed
+// presets arrive disabled + deferred with no Agent bindings, so enabling and
+// binding stays an explicit per-tool decision here in the toolbox.
+function PresetPicker({
+  open,
+  onClose,
+  onInstalled,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onInstalled: () => void;
+}) {
+  const { ui } = useUITranslation();
+  const [presets, setPresets] = React.useState<ToolPreset[]>([]);
+  const [selected, setSelected] = React.useState<string[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [installing, setInstalling] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    setSelected([]);
+    api
+      .listToolPresets()
+      .then((rows) => {
+        setPresets(rows);
+        setSelected(rows.filter((p) => !p.installed).map((p) => p.key));
+      })
+      .catch((e) => toast.error(ui("screen.toolboxPresetsFailed") + (e as Error).message))
+      .finally(() => setLoading(false));
+  }, [open, ui]);
+
+  const toggle = (k: string) => setSelected((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
+
+  async function install() {
+    if (selected.length === 0) return;
+    setInstalling(true);
+    try {
+      const r = await api.installToolPresets(selected);
+      const detail = r.errors.length ? " " + r.errors.slice(0, 3).join("; ") : "";
+      toast.success(ui("screen.toolboxPresetInstallDone", { v0: r.installed.length, v1: r.skipped.length }) + detail);
+      onInstalled();
+    } catch (e) {
+      toast.error(ui("screen.toolboxPresetInstallFailed") + (e as Error).message);
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
+      <SheetContent
+        side="right"
+        className="flex flex-col gap-0 p-0 data-[side=right]:w-[38vw] data-[side=right]:sm:max-w-[38vw] data-[side=right]:min-w-[440px]"
+      >
+        <SheetHeader className="px-4">
+          <SheetTitle>{ui("screen.toolboxPresets")}</SheetTitle>
+          <SheetDescription>{ui("screen.toolboxPresetsHint")}</SheetDescription>
+        </SheetHeader>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-3">
+          {loading ? (
+            <p className="text-muted-foreground py-6 text-center text-sm">{ui("screen.toolboxChecking")}</p>
+          ) : presets.length === 0 ? (
+            <p className="text-muted-foreground py-6 text-center text-sm">{ui("screen.toolboxPresetNone")}</p>
+          ) : (
+            presets.map((p) => (
+              <label
+                key={p.key}
+                className={
+                  "flex items-start gap-2 rounded-md border p-3 text-sm " +
+                  (p.installed ? "opacity-60" : "hover:border-primary/50 cursor-pointer")
+                }
+              >
+                <Checkbox
+                  className="mt-0.5"
+                  checked={p.installed || selected.includes(p.key)}
+                  disabled={p.installed}
+                  onCheckedChange={() => toggle(p.key)}
+                />
+                <span className="flex min-w-0 flex-1 flex-col gap-1">
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-mono text-sm font-medium">{p.key}</span>
+                    {p.category && (
+                      <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                        {p.category}
+                      </Badge>
+                    )}
+                    {p.binary && (
+                      <Badge variant="secondary" className="px-1.5 py-0 font-mono text-[10px]">
+                        {p.binary}
+                      </Badge>
+                    )}
+                    {p.proxy_mode !== "inherit" && (
+                      <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                        {ui("screen.5e84ea61e8386a")}: {p.proxy_mode}
+                      </Badge>
+                    )}
+                    {p.installed && (
+                      <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+                        {ui("screen.toolboxInstalled")}
+                      </Badge>
+                    )}
+                  </span>
+                  <span className="text-muted-foreground text-xs">{p.description}</span>
+                </span>
+              </label>
+            ))
+          )}
+        </div>
+
+        <Separator />
+        <div className="flex items-center gap-2 p-4">
+          <Button size="sm" onClick={install} disabled={installing || selected.length === 0}>
+            <PlusIcon /> {ui("screen.toolboxPresetInstall")}
+          </Button>
+          <Button size="sm" variant="outline" onClick={onClose}>
+            {ui("screen.2cd0f3be8738a8")}
+          </Button>
         </div>
       </SheetContent>
     </Sheet>

@@ -3,7 +3,20 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 )
+
+// ToolMeta is the toolbox metadata shared by built-in and custom tools. It does
+// not affect execution; it exists so the toolbox can group tools, show whether
+// their binary is installed, and explain how a tool reaches the network.
+type ToolMeta struct {
+	Category   string `json:"category"`
+	Binary     string `json:"binary"`
+	ProxyMode  string `json:"proxy_mode"` // inherit | none | http | socks5 | env | raw
+	Source     string `json:"source"`     // builtin | custom | imported
+	VersionCmd string `json:"version_cmd"`
+	Homepage   string `json:"homepage"`
+}
 
 // Tool is one row of the built-in tool catalog. key + handler live in code; this
 // row carries only the page-editable surface: description, parameter schema
@@ -19,10 +32,28 @@ type Tool struct {
 	Kind        string          `json:"kind"`     // builtin | command | script | http
 	Exec        json.RawMessage `json:"exec"`     // 自定义工具执行规格(kind!=builtin)
 	Deferred    bool            `json:"deferred"` // schema 延迟(走 SearchExtraTools/ExecuteExtraTool)
-	Calls       int             `json:"calls"`    // runtime ledger aggregate; not stored in tools
+	ToolMeta
+	Calls int `json:"calls"` // runtime ledger aggregate; not stored in tools
 }
 
-const toolCols = `key, system, description, schema, agents, enabled, kind, exec, deferred`
+// "binary" is a reserved word in PostgreSQL and must stay quoted everywhere.
+const toolCols = `key, system, description, schema, agents, enabled, kind, exec, deferred, category, "binary", proxy_mode, source, version_cmd, homepage`
+
+func normalizeToolMeta(m ToolMeta) ToolMeta {
+	m.Category = strings.TrimSpace(m.Category)
+	m.Binary = strings.TrimSpace(m.Binary)
+	m.ProxyMode = strings.TrimSpace(m.ProxyMode)
+	if m.ProxyMode == "" {
+		m.ProxyMode = "inherit"
+	}
+	m.Source = strings.TrimSpace(m.Source)
+	if m.Source == "" {
+		m.Source = "custom"
+	}
+	m.VersionCmd = strings.TrimSpace(m.VersionCmd)
+	m.Homepage = strings.TrimSpace(m.Homepage)
+	return m
+}
 
 // SeedTool inserts a built-in tool's code-defined defaults ONCE. ON CONFLICT DO
 // NOTHING: an existing row (possibly edited in the UI) is never overwritten on
@@ -36,8 +67,8 @@ func (d *DB) SeedTool(key, desc string, schema, agents json.RawMessage) error {
 		agents = json.RawMessage("[]")
 	}
 	_, err := d.Exec(`
-INSERT INTO tools(key, system, description, schema, agents, enabled)
-VALUES ($1, true, $2, $3, $4, true)
+INSERT INTO tools(key, system, description, schema, agents, enabled, source)
+VALUES ($1, true, $2, $3, $4, true, 'builtin')
 ON CONFLICT (key) DO NOTHING`, key, desc, schema, agents)
 	return err
 }
@@ -81,13 +112,14 @@ func (d *DB) UpsertToolForce(key, desc string, schema, agents json.RawMessage) e
 		agents = json.RawMessage("[]")
 	}
 	_, err := d.Exec(`
-INSERT INTO tools(key, system, description, schema, agents, enabled)
-VALUES ($1, true, $2, $3, $4, true)
+INSERT INTO tools(key, system, description, schema, agents, enabled, source)
+VALUES ($1, true, $2, $3, $4, true, 'builtin')
 ON CONFLICT (key) DO UPDATE
   SET description = EXCLUDED.description,
       schema      = EXCLUDED.schema,
       agents      = EXCLUDED.agents,
-      enabled     = true`, key, desc, schema, agents)
+      enabled     = true,
+      source      = 'builtin'`, key, desc, schema, agents)
 	return err
 }
 
@@ -107,7 +139,8 @@ func (d *DB) RefreshToolDefaults(key, desc string, schema json.RawMessage) error
 func scanTool(rows interface{ Scan(...any) error }) (*Tool, error) {
 	var t Tool
 	var agents []byte
-	if err := rows.Scan(&t.Key, &t.System, &t.Description, &t.Schema, &agents, &t.Enabled, &t.Kind, &t.Exec, &t.Deferred); err != nil {
+	if err := rows.Scan(&t.Key, &t.System, &t.Description, &t.Schema, &agents, &t.Enabled, &t.Kind, &t.Exec, &t.Deferred,
+		&t.Category, &t.Binary, &t.ProxyMode, &t.Source, &t.VersionCmd, &t.Homepage); err != nil {
 		return nil, err
 	}
 	if len(agents) > 0 {
@@ -162,10 +195,13 @@ func (d *DB) CreateCustomTool(t *Tool) error {
 	if len(agents) == 0 {
 		agents = json.RawMessage("[]")
 	}
+	meta := normalizeToolMeta(t.ToolMeta)
 	_, err := d.Exec(`
-INSERT INTO tools(key, system, description, schema, agents, enabled, kind, exec, deferred)
-VALUES ($1, false, $2, $3, $4, $5, $6, $7, $8)`,
-		t.Key, t.Description, schema, agents, t.Enabled, t.Kind, exec, t.Deferred)
+INSERT INTO tools(key, system, description, schema, agents, enabled, kind, exec, deferred,
+                  category, "binary", proxy_mode, source, version_cmd, homepage)
+VALUES ($1, false, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		t.Key, t.Description, schema, agents, t.Enabled, t.Kind, exec, t.Deferred,
+		meta.Category, meta.Binary, meta.ProxyMode, meta.Source, meta.VersionCmd, meta.Homepage)
 	return err
 }
 
@@ -184,10 +220,13 @@ func (d *DB) UpdateCustomTool(t *Tool) error {
 	if len(agents) == 0 {
 		agents = json.RawMessage("[]")
 	}
+	meta := normalizeToolMeta(t.ToolMeta)
 	_, err := d.Exec(`
-UPDATE tools SET description=$2, schema=$3, agents=$4, enabled=$5, kind=$6, exec=$7, deferred=$8
+UPDATE tools SET description=$2, schema=$3, agents=$4, enabled=$5, kind=$6, exec=$7, deferred=$8,
+                 category=$9, "binary"=$10, proxy_mode=$11, source=$12, version_cmd=$13, homepage=$14
 WHERE key=$1 AND system=false`,
-		t.Key, t.Description, schema, agents, t.Enabled, t.Kind, exec, t.Deferred)
+		t.Key, t.Description, schema, agents, t.Enabled, t.Kind, exec, t.Deferred,
+		meta.Category, meta.Binary, meta.ProxyMode, meta.Source, meta.VersionCmd, meta.Homepage)
 	return err
 }
 
@@ -228,5 +267,25 @@ func (d *DB) UpdateTool(key, desc string, schema, agents json.RawMessage, enable
 	_, err := d.Exec(`
 UPDATE tools SET description=$2, schema=$3, agents=$4, enabled=$5 WHERE key=$1`,
 		key, desc, schema, agents, enabled)
+	return err
+}
+
+// UpdateToolWithMeta is the system-tool variant that also saves toolbox metadata.
+// Kept separate from UpdateTool so existing callers/tests do not silently clear
+// metadata rows they never knew about.
+func (d *DB) UpdateToolWithMeta(key, desc string, schema, agents json.RawMessage, enabled bool, meta ToolMeta) error {
+	if len(schema) == 0 {
+		schema = json.RawMessage("{}")
+	}
+	if len(agents) == 0 {
+		agents = json.RawMessage("[]")
+	}
+	meta = normalizeToolMeta(meta)
+	_, err := d.Exec(`
+UPDATE tools SET description=$2, schema=$3, agents=$4, enabled=$5,
+                 category=$6, "binary"=$7, proxy_mode=$8, source=$9, version_cmd=$10, homepage=$11
+WHERE key=$1`,
+		key, desc, schema, agents, enabled,
+		meta.Category, meta.Binary, meta.ProxyMode, meta.Source, meta.VersionCmd, meta.Homepage)
 	return err
 }

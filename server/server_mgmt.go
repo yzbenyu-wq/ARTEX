@@ -805,13 +805,31 @@ func (s *Server) pgUpdateTool(w http.ResponseWriter, r *http.Request) {
 		Schema      json.RawMessage `json:"schema"`
 		Agents      []string        `json:"agents"`
 		Enabled     bool            `json:"enabled"`
+		Category    string          `json:"category"`
+		Binary      string          `json:"binary"`
+		ProxyMode   string          `json:"proxy_mode"`
+		VersionCmd  string          `json:"version_cmd"`
+		Homepage    string          `json:"homepage"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	proxyMode, ok := normalizeProxyMode(body.ProxyMode)
+	if !ok {
+		writeErr(w, 400, "proxy_mode 需为 inherit / none / http / socks5 / env / raw")
+		return
+	}
+	source := cur.Source
+	if strings.TrimSpace(source) == "" {
+		source = "builtin"
+	}
 	agents, _ := json.Marshal(body.Agents)
-	if err := pg.UpdateTool(key, body.Description, body.Schema, agents, body.Enabled); err != nil {
+	meta := db.ToolMeta{
+		Category: body.Category, Binary: body.Binary, ProxyMode: proxyMode,
+		Source: source, VersionCmd: body.VersionCmd, Homepage: body.Homepage,
+	}
+	if err := pg.UpdateToolWithMeta(key, body.Description, body.Schema, agents, body.Enabled, meta); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}

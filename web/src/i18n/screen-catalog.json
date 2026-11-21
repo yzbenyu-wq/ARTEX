@@ -2457,8 +2457,8 @@
   "screen.f6304be61c53f3": ["累计调用 {{v0}} 次", "{{v0}} calls total"],
   "screen.7d97c77ac3183d": ["（未绑定 Agent）", "(no bound Agents)"],
   "screen.070c5bf8a7a0cb": [
-    "系统工具的描述/绑定，以及自定义工具(command/script/http)",
-    "System tool descriptions and bindings; custom command/script/http tools"
+    "系统工具的描述/绑定，以及自定义工具(command/script/http/recipe)",
+    "System tool descriptions and bindings; custom command/script/http/recipe tools"
   ],
   "screen.2b7665ed985e0a": ["搜索工具名、描述、Agent…", "Search tool names, descriptions or Agents…"],
   "screen.4d12f613be8bf8": [
@@ -2472,12 +2472,12 @@
   "screen.c31006ada9d69d": ["没有匹配的系统工具", "No matching system tools"],
   "screen.20e14c773f53f6": ["（暂无系统工具，等待后端 seed）", "(no system tools; waiting for backend initialization)"],
   "screen.c596c5a80767be": [
-    "shell/command/script/http，{{v0}} / {{v1}} 个匹配，点击卡片编辑",
-    "shell/command/script/http; {{v0}} / {{v1}} matches. Click a card to edit"
+    "shell/command/script/http/recipe，{{v0}} / {{v1}} 个匹配，点击卡片编辑",
+    "shell/command/script/http/recipe; {{v0}} / {{v1}} matches. Click a card to edit"
   ],
   "screen.431df6fd85c9b3": [
-    "shell(bash 声明) / command(命令) / script(Python) / http(API)，共 {{v0}} 个，点击卡片编辑",
-    "shell / command / script (Python) / http (API); {{v0}} tools. Click a card to edit"
+    "shell(bash 声明) / command(命令) / script(Python) / http(API) / recipe(argv 模板)，共 {{v0}} 个，点击卡片编辑",
+    "shell / command / script (Python) / http (API) / recipe (argv template); {{v0}} tools. Click a card to edit"
   ],
   "screen.87b2833f370844": ["新建自定义工具", "New custom tool"],
   "screen.918b9515dae7aa": ["没有匹配的自定义工具", "No matching custom tools"],
@@ -2503,8 +2503,8 @@
   "screen.5194c511368a9c": ["测试参数 JSON 格式错误", "Invalid test argument JSON"],
   "screen.f6de91250ef4ad": ["编辑 {{v0}}", "Edit {{v0}}"],
   "screen.5aedc801135f87": [
-    "shell=bash 环境声明(只需名称+描述，告知模型可用 bash 调用)；command/script/http 需写执行规格。",
-    "shell declares a bash environment using a name and description; command/script/http require an execution specification."
+    "shell=bash 环境声明(只需名称+描述，告知模型可用 bash 调用)；command/script/http/recipe 需写执行规格。",
+    "shell declares a bash environment using a name and description; command/script/http/recipe require an execution specification."
   ],
   "screen.9210ea3a655465": ["如 nmap_scan", "e.g. nmap_scan"],
   "screen.e4c430635064b5": ["描述(发给模型)", "Description (sent to model)"],
@@ -2970,5 +2970,64 @@
   "punctuation.f114611cd6": ["：", ": "],
   "punctuation.d6a4e79b56": ["？", "?"],
   "punctuation.5432cbf694": ["JSON（.json）", "JSON(.json)"],
-  "punctuation.b269e4a091": ["「", "“"]
+  "punctuation.b269e4a091": ["「", "“"],
+  "screen.toolboxTitle": ["工具箱", "Toolbox"],
+  "screen.toolboxImport": ["导入工具", "Import tools"],
+  "screen.toolboxExport": ["导出工具", "Export tools"],
+  "screen.toolboxCheckVersions": ["检测版本", "Check versions"],
+  "screen.toolboxChecking": ["检测中…", "Checking…"],
+  "screen.toolboxVersionsChecked": ["版本检测完成", "Version check complete"],
+  "screen.toolboxStatusFailed": ["状态检测失败：", "Status check failed: "],
+  "screen.toolboxExportFailed": ["导出失败：", "Export failed: "],
+  "screen.toolboxImportFailed": ["导入失败：", "Import failed: "],
+  "screen.toolboxImportDone": ["导入完成：成功 {{v0}}，跳过 {{v1}}", "Imported {{v0}}, skipped {{v1}}"],
+  "screen.toolboxInvalidJson": ["导入文件不是有效的工具 JSON", "The import file is not valid tool JSON"],
+  "screen.toolboxMeta": ["工具元数据", "Tool metadata"],
+  "screen.toolboxMetaHint": [
+    "只用于分类、状态检测和代理说明，不改变执行逻辑。",
+    "Used for grouping, binary status and proxy notes; it does not change execution."
+  ],
+  "screen.toolboxCategory": ["分类", "Category"],
+  "screen.toolboxBinary": ["二进制", "Binary"],
+  "screen.toolboxProxyMode": ["代理方式", "Proxy mode"],
+  "screen.toolboxVersionCmd": ["版本命令", "Version command"],
+  "screen.toolboxHomepage": ["主页", "Homepage"],
+  "screen.toolboxInstalled": ["已安装", "Installed"],
+  "screen.toolboxMissing": ["缺失", "Missing"],
+  "screen.toolboxImported": ["已导入", "Imported"],
+  "screen.toolboxPresets": ["预置工具库", "Preset library"],
+  "screen.toolboxPresetsHint": [
+    "内置的 recipe 目录（httpx/subfinder/nuclei 等）。安装后生成停止、延迟加载且未绑定 Agent 的自定义工具，启用与绑定由你决定。",
+    "Built-in recipe catalog (httpx, subfinder, nuclei and more). Installed tools arrive disabled, deferred and unbound; enabling and binding stay your call."
+  ],
+  "screen.toolboxPresetsFailed": ["读取预置工具失败：", "Failed to load presets: "],
+  "screen.toolboxPresetNone": ["没有可用的预置工具", "No presets available"],
+  "screen.toolboxPresetSource": ["预置", "Preset"],
+  "screen.toolboxPresetInstall": ["安装所选", "Install selected"],
+  "screen.toolboxPresetInstallDone": [
+    "预置安装完成：成功 {{v0}}，跳过 {{v1}}",
+    "Presets installed: {{v0}} created, {{v1}} skipped"
+  ],
+  "screen.toolboxPresetInstallFailed": ["安装预置工具失败：", "Failed to install presets: "],
+  "screen.toolboxKindRecipe": ["recipe（argv 参数模板）", "recipe (argv template)"],
+  "screen.toolboxRecipeArgv": ["argv 参数组（JSON）", "argv groups (JSON)"],
+  "screen.toolboxRecipeArgvHint": [
+    "每个数组是一组参数；组内任一 {param} 缺失则整组跳过；恰为 {name} 的数组值按元素重复该组；binary 单独填、不要写进 argv；不经过 shell。",
+    "Each array is one argument group; a group is skipped when any {param} in it is missing; an exact {name} array value repeats the group per element; keep the binary out of argv; no shell is involved."
+  ],
+  "screen.toolboxRecipeStdin": ["stdin 模板（可含 {param}，空=不喂入）", "stdin template (supports {param}; blank = none)"],
+  "screen.toolboxRecipeAllowedExit": [
+    "允许的退出码（逗号分隔，空=仅 0）",
+    "Allowed exit codes (comma-separated; blank = 0 only)"
+  ],
+  "screen.toolboxRecipeSchemaHint": ["（recipe 工具必填，需含 properties）", "(required for recipe tools; must contain properties)"],
+  "screen.toolboxRecipeSchemaRequired": [
+    "recipe 工具必须提供参数 JSON Schema（含 properties，不能留空）",
+    "Recipe tools require a parameter JSON Schema with properties"
+  ],
+  "screen.toolboxRecipeInvalidArgv": [
+    "argv 需为非空 JSON 数组（元素为字符串或字符串数组）",
+    "argv must be a non-empty JSON array of strings or string arrays"
+  ],
+  "screen.toolboxRecipeInvalidExit": ["退出码需为逗号分隔的整数", "Exit codes must be comma-separated integers"]
 }

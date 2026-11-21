@@ -1079,6 +1079,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tools/custom/test", s.pgTestCustomTool)
 	mux.HandleFunc("PUT /api/tools/custom/{key}", s.pgUpdateCustomTool)
 	mux.HandleFunc("DELETE /api/tools/custom/{key}", s.pgDeleteCustomTool)
+	mux.HandleFunc("GET /api/tools/status", s.pgToolStatus)
+	mux.HandleFunc("GET /api/tools/export", s.pgExportTools)
+	mux.HandleFunc("POST /api/tools/import", s.pgImportTools)
+	mux.HandleFunc("GET /api/tools/presets", s.pgListToolPresets)
+	mux.HandleFunc("POST /api/tools/presets/install", s.pgInstallToolPresets)
 	mux.HandleFunc("POST /api/settings/python/detect", s.pgDetectPython)
 	mux.HandleFunc("POST /api/tools/{key}/reset", s.pgResetTool)
 	// MCP CRUD

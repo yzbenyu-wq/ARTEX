@@ -2662,6 +2662,20 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
 
   // ── tools ──
   if (path === "/tools" && m === "GET") return { tools: D.tools };
+  if (path === "/tools/status" && m === "GET")
+    return {
+      status: D.tools.map((t) => ({
+        key: t.key,
+        binary: t.binary ?? "",
+        installed: !!t.binary,
+        path: t.binary ? `/usr/local/bin/${t.binary}` : undefined,
+        version: t.binary ? "demo" : undefined,
+        error: t.binary ? undefined : "未配置二进制",
+      })),
+    };
+  if (path === "/tools/export" && m === "GET")
+    return { version: 1, tools: D.tools.filter((t) => !t.system) };
+  if (path === "/tools/import" && m === "POST") return { imported: 0, skipped: 0, errors: [] };
   if (path === "/tools/custom" && m === "POST") return { key: String(b.key ?? "custom-tool") };
   if (path === "/tools/custom/test") return { output: "（demo）工具执行输出示例。", is_error: false };
 

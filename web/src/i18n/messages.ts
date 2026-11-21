@@ -55,7 +55,7 @@ export const messages = {
   "nav.agents": ["Agent", "Agents"],
   "nav.mcp": ["MCP", "MCP"],
   "nav.skills": ["Skill", "Skills"],
-  "nav.tools": ["工具", "Tools"],
+  "nav.tools": ["工具箱", "Toolbox"],
   "nav.notify": ["通知推送", "Notifications"],
   "nav.intercept": ["拦截规则", "Interception rules"],
   "nav.asset-intercept": ["资产拦截", "Asset interception"],

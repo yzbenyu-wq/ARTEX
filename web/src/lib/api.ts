@@ -109,6 +109,8 @@ import type {
   TokenTotal,
   TokenUsage,
   Tool,
+  ToolPreset,
+  ToolStatus,
   ToolStat,
   TrafficDetail,
   TrafficEvidenceRef,
@@ -1476,20 +1478,67 @@ export const api = {
 
   // ---- tools (内置工具目录) ----
   tools: () => get<{ tools: Tool[] }>("/tools").then((r) => arr(r.tools)),
-  saveTool: (key: string, patch: Pick<Tool, "description" | "schema" | "agents" | "enabled">) =>
-    put<{ ok: boolean }>(`/tools/${key}`, patch),
+  saveTool: (
+    key: string,
+    patch: Pick<
+      Tool,
+      "description" | "schema" | "agents" | "enabled" | "category" | "binary" | "proxy_mode" | "version_cmd" | "homepage"
+    >,
+  ) => put<{ ok: boolean }>(`/tools/${key}`, patch),
   resetTool: (key: string) => post<{ ok: boolean }>(`/tools/${key}/reset`, {}),
+  toolStatus: (withVersions = false) =>
+    get<{ status: ToolStatus[] }>(`/tools/status${withVersions ? "?version=1" : ""}`).then((r) => r.status ?? []),
+  exportTools: () => get<{ version: number; tools: Tool[] }>("/tools/export"),
+  importTools: (tools: Partial<Tool>[]) =>
+    post<{ imported: number; skipped: number; errors: string[] }>("/tools/import", { tools }),
+  listToolPresets: () => get<{ presets: ToolPreset[] }>("/tools/presets").then((r) => arr(r.presets)),
+  installToolPresets: (keys: string[]) =>
+    post<{ installed: string[]; skipped: string[]; errors: string[] }>("/tools/presets/install", { keys }),
   // custom tools (自定义工具)
   createCustomTool: (
-    t: Pick<Tool, "key" | "description" | "schema" | "agents" | "enabled" | "kind" | "exec" | "deferred">,
+    t: Pick<
+      Tool,
+      | "key"
+      | "description"
+      | "schema"
+      | "agents"
+      | "enabled"
+      | "kind"
+      | "exec"
+      | "deferred"
+      | "category"
+      | "binary"
+      | "proxy_mode"
+      | "version_cmd"
+      | "homepage"
+    >,
   ) => post<{ key: string }>("/tools/custom", t),
   updateCustomTool: (
     key: string,
-    t: Pick<Tool, "description" | "schema" | "agents" | "enabled" | "kind" | "exec" | "deferred">,
+    t: Pick<
+      Tool,
+      | "description"
+      | "schema"
+      | "agents"
+      | "enabled"
+      | "kind"
+      | "exec"
+      | "deferred"
+      | "category"
+      | "binary"
+      | "proxy_mode"
+      | "version_cmd"
+      | "homepage"
+    >,
   ) => put<{ ok: boolean }>(`/tools/custom/${key}`, t),
   deleteCustomTool: (key: string) => del<{ deleted: string }>(`/tools/custom/${key}`),
-  testCustomTool: (body: { kind: string; exec: Record<string, unknown>; params: Record<string, unknown> }) =>
-    post<{ output: string; is_error: boolean }>("/tools/custom/test", body),
+  testCustomTool: (body: {
+    kind: string;
+    exec: Record<string, unknown>;
+    params: Record<string, unknown>;
+    proxy_mode?: string;
+    binary?: string;
+  }) => post<{ output: string; is_error: boolean }>("/tools/custom/test", body),
   detectPython: () => post<{ python_interpreter: string }>("/settings/python/detect", {}),
 
   // ---- mcp ----

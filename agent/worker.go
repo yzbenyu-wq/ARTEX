@@ -194,6 +194,11 @@ func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
 // honor the proxy vars. ALL_PROXY is set too so a socks5 egress proxy (which curl
 // only reads from ALL_PROXY, not HTTP(S)_PROXY) works in the capture-off path.
 // Empty proxyAddr → nil (direct, unchanged env).
+// ProxyEnv exposes the same proxy/CA environment used by agent Bash sessions so
+// HTTP-triggered tool tests can reproduce real agent calls instead of running
+// direct and reporting a misleading result.
+func ProxyEnv(proxyAddr, caCert string) []string { return proxyEnv(proxyAddr, caCert) }
+
 func proxyEnv(proxyAddr, caCert string) []string {
 	if proxyAddr == "" {
 		return nil

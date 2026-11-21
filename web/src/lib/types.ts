@@ -1354,6 +1354,8 @@ export interface MissingSkill {
 // key + handler live in Go; only these fields are page-editable. system tools lock
 // the key and the parameter *structure* (name/type/required) — the per-param
 // description/default and the agent binding are what move.
+export type ToolProxyMode = "inherit" | "none" | "http" | "socks5" | "env" | "raw";
+
 export interface Tool {
   key: string;
   system: boolean;
@@ -1362,11 +1364,38 @@ export interface Tool {
   schema: Record<string, any>; // full JSON-Schema (object with properties)
   agents: string[]; // bound agent keys
   enabled: boolean;
-  kind?: "builtin" | "shell" | "command" | "script" | "http"; // 自定义工具类型
+  kind?: "builtin" | "shell" | "command" | "script" | "http" | "recipe"; // 自定义工具类型
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   exec?: Record<string, any>; // 自定义工具执行规格(kind!=builtin)
   deferred?: boolean; // schema 延迟(SearchExtraTools/ExecuteExtraTool)
+  category?: string;
+  binary?: string;
+  proxy_mode?: ToolProxyMode;
+  source?: "builtin" | "custom" | "imported" | string;
+  version_cmd?: string;
+  homepage?: string;
   calls?: number; // persistent runtime invocation count (older APIs may omit it)
+}
+
+export interface ToolStatus {
+  key: string;
+  binary?: string;
+  installed: boolean;
+  path?: string;
+  version?: string;
+  error?: string;
+}
+
+// 预置工具库（服务端内置的 recipe 目录，安装后成为普通自定义工具）
+export interface ToolPreset {
+  key: string;
+  description: string;
+  category: string;
+  binary: string;
+  proxy_mode: ToolProxyMode;
+  version_cmd?: string;
+  homepage?: string;
+  installed: boolean;
 }
 
 // ---- Stats ----

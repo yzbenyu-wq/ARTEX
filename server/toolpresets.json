@@ -1,0 +1,332 @@
+[
+  {
+    "key": "httpx",
+    "description": "HTTP 批量探测：存活、状态码、标题、指纹与技术栈（ProjectDiscovery httpx）。返回 JSONL。",
+    "category": "recon",
+    "binary": "httpx",
+    "proxy_mode": "http",
+    "version_cmd": "httpx -version",
+    "homepage": "https://github.com/projectdiscovery/httpx",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "target": { "type": "string", "description": "目标 URL/主机，如 https://example.com" },
+        "ports": { "type": "string", "description": "附加探测端口，如 80,443,8080" },
+        "path": { "type": "string", "description": "探测路径，如 /admin" },
+        "rate_limit": { "type": "integer", "description": "每秒请求上限" },
+        "threads": { "type": "integer", "description": "并发线程数" }
+      },
+      "required": ["target"]
+    },
+    "exec": {
+      "argv": [
+        ["-silent", "-no-color"],
+        ["-u", "{target}"],
+        ["-json"],
+        ["-p", "{ports}"],
+        ["-path", "{path}"],
+        ["-rl", "{rate_limit}"],
+        ["-threads", "{threads}"],
+        ["-proxy", "{proxy}"]
+      ],
+      "timeout_ms": 300000
+    }
+  },
+  {
+    "key": "subfinder",
+    "description": "被动子域名枚举，多数据源聚合（ProjectDiscovery subfinder）。返回 JSONL。",
+    "category": "recon",
+    "binary": "subfinder",
+    "proxy_mode": "env",
+    "version_cmd": "subfinder -version",
+    "homepage": "https://github.com/projectdiscovery/subfinder",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "domain": { "type": "string", "description": "目标根域名，如 example.com" },
+        "timeout": { "type": "integer", "description": "单数据源超时秒数" }
+      },
+      "required": ["domain"]
+    },
+    "exec": {
+      "argv": [
+        ["-silent"],
+        ["-d", "{domain}"],
+        ["-all"],
+        ["-json"],
+        ["-timeout", "{timeout}"]
+      ],
+      "timeout_ms": 600000
+    }
+  },
+  {
+    "key": "dnsx",
+    "description": "DNS 批量解析与记录查询：A/AAAA/CNAME + 响应（ProjectDiscovery dnsx）。",
+    "category": "recon",
+    "binary": "dnsx",
+    "proxy_mode": "http",
+    "version_cmd": "dnsx -version",
+    "homepage": "https://github.com/projectdiscovery/dnsx",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "domain": { "type": "string", "description": "待解析的域名（如子域列表逐条调用）" }
+      },
+      "required": ["domain"]
+    },
+    "exec": {
+      "argv": [
+        ["-silent", "-json"],
+        ["-d", "{domain}"],
+        ["-a", "-aaaa", "-cname", "-resp"],
+        ["-proxy", "{proxy}"]
+      ],
+      "timeout_ms": 120000
+    }
+  },
+  {
+    "key": "tlsx",
+    "description": "TLS 批量采集：证书 SAN/CN、TLS 版本与指纹（ProjectDiscovery tlsx）。",
+    "category": "recon",
+    "binary": "tlsx",
+    "proxy_mode": "http",
+    "version_cmd": "tlsx -version",
+    "homepage": "https://github.com/projectdiscovery/tlsx",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string", "description": "目标主机或域名" }
+      },
+      "required": ["host"]
+    },
+    "exec": {
+      "argv": [
+        ["-silent", "-json"],
+        ["-host", "{host}"],
+        ["-san", "-cn", "-tls-version"],
+        ["-proxy", "{proxy}"]
+      ],
+      "timeout_ms": 120000
+    }
+  },
+  {
+    "key": "naabu",
+    "description": "高速端口扫描（ProjectDiscovery naabu）。注意：naabu 只接受 SOCKS5 代理，请在 proxy_socks5 填 socks5://host:port；未填则直连。",
+    "category": "recon",
+    "binary": "naabu",
+    "proxy_mode": "none",
+    "version_cmd": "naabu -version",
+    "homepage": "https://github.com/projectdiscovery/naabu",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string", "description": "目标 IP 或域名" },
+        "top_ports": { "type": "string", "description": "常用端口数量，如 100 / 1000" },
+        "proxy_socks5": { "type": "string", "description": "SOCKS5 代理，如 socks5://1.2.3.4:1080（可选）" },
+        "rate": { "type": "integer", "description": "每秒包数" }
+      },
+      "required": ["host"]
+    },
+    "exec": {
+      "argv": [
+        ["-silent", "-json"],
+        ["-host", "{host}"],
+        ["-top-ports", "{top_ports}"],
+        ["-rate", "{rate}"],
+        ["-proxy", "{proxy_socks5}"]
+      ],
+      "timeout_ms": 600000
+    }
+  },
+  {
+    "key": "katana",
+    "description": "Web 爬虫：抓取端点与表单，支持 JS 爬取（ProjectDiscovery katana）。返回 JSONL。",
+    "category": "recon",
+    "binary": "katana",
+    "proxy_mode": "http",
+    "version_cmd": "katana -version",
+    "homepage": "https://github.com/projectdiscovery/katana",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "起始 URL" },
+        "depth": { "type": "integer", "description": "爬取深度，默认 3" }
+      },
+      "required": ["url"]
+    },
+    "exec": {
+      "argv": [
+        ["-silent", "-jsonl"],
+        ["-u", "{url}"],
+        ["-d", "{depth}"],
+        ["-jc"],
+        ["-proxy", "{proxy}"]
+      ],
+      "timeout_ms": 600000
+    }
+  },
+  {
+    "key": "nuclei",
+    "description": "模板化漏洞扫描（ProjectDiscovery nuclei）。返回 JSONL；务必确认目标在授权范围内。",
+    "category": "vuln",
+    "binary": "nuclei",
+    "proxy_mode": "http",
+    "version_cmd": "nuclei -version",
+    "homepage": "https://github.com/projectdiscovery/nuclei",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "target": { "type": "string", "description": "目标 URL" },
+        "severity": { "type": "string", "description": "严重度过滤，如 critical,high" },
+        "tags": { "type": "string", "description": "模板标签，如 cve,rce" },
+        "template": { "type": "string", "description": "自定义模板路径（可选）" }
+      },
+      "required": ["target"]
+    },
+    "exec": {
+      "argv": [
+        ["-silent", "-jsonl", "-nc"],
+        ["-u", "{target}"],
+        ["-severity", "{severity}"],
+        ["-tags", "{tags}"],
+        ["-t", "{template}"],
+        ["-proxy", "{proxy}"]
+      ],
+      "timeout_ms": 1800000
+    }
+  },
+  {
+    "key": "gau",
+    "description": "从 Wayback/CommonCrawl/OTX/URLScan 收集历史 URL（gau）。走环境变量代理。",
+    "category": "recon",
+    "binary": "gau",
+    "proxy_mode": "env",
+    "version_cmd": "gau --version",
+    "homepage": "https://github.com/lc/gau",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "domain": { "type": "string", "description": "目标域名" },
+        "providers": { "type": "string", "description": "数据源，如 wayback,commoncrawl,otx,urlscan" }
+      },
+      "required": ["domain"]
+    },
+    "exec": {
+      "argv": [
+        ["--subs"],
+        ["{domain}"],
+        ["--providers", "{providers}"]
+      ],
+      "timeout_ms": 300000
+    }
+  },
+  {
+    "key": "waybackurls",
+    "description": "从 Wayback Machine 拉取历史 URL（waybackurls）。走环境变量代理。",
+    "category": "recon",
+    "binary": "waybackurls",
+    "proxy_mode": "env",
+    "version_cmd": "",
+    "homepage": "https://github.com/tomnomnom/waybackurls",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "domain": { "type": "string", "description": "目标域名" }
+      },
+      "required": ["domain"]
+    },
+    "exec": {
+      "argv": [
+        ["{domain}"]
+      ],
+      "timeout_ms": 300000
+    }
+  },
+  {
+    "key": "ffuf",
+    "description": "Web 模糊测试：目录/文件/参数发现（ffuf）。URL 用 FUZZ 作为占位符。",
+    "category": "web",
+    "binary": "ffuf",
+    "proxy_mode": "http",
+    "version_cmd": "ffuf -V",
+    "homepage": "https://github.com/ffuf/ffuf",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "目标 URL，含 FUZZ 占位符" },
+        "wordlist": { "type": "string", "description": "字典文件路径", "default": "/usr/share/wordlists/dirb/common.txt" },
+        "match_codes": { "type": "string", "description": "匹配状态码，如 200,204,301,302,403" },
+        "threads": { "type": "integer", "description": "并发数" }
+      },
+      "required": ["url", "wordlist"]
+    },
+    "exec": {
+      "argv": [
+        ["-s"],
+        ["-u", "{url}"],
+        ["-w", "{wordlist}"],
+        ["-mc", "{match_codes}"],
+        ["-t", "{threads}"],
+        ["-x", "{proxy}"]
+      ],
+      "timeout_ms": 900000
+    }
+  },
+  {
+    "key": "feroxbuster",
+    "description": "递归内容发现（feroxbuster）。",
+    "category": "web",
+    "binary": "feroxbuster",
+    "proxy_mode": "http",
+    "version_cmd": "feroxbuster --version",
+    "homepage": "https://github.com/epi052/feroxbuster",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "目标 URL" },
+        "wordlist": { "type": "string", "description": "字典文件路径" },
+        "threads": { "type": "integer", "description": "线程数" }
+      },
+      "required": ["url", "wordlist"]
+    },
+    "exec": {
+      "argv": [
+        ["-q"],
+        ["-u", "{url}"],
+        ["-w", "{wordlist}"],
+        ["-t", "{threads}"],
+        ["--proxy", "{proxy}"]
+      ],
+      "timeout_ms": 900000
+    }
+  },
+  {
+    "key": "nmap",
+    "description": "端口/服务/脚本扫描（nmap）。默认 -sT -sV -sC（无 root 可用）；nmap 属原始套接字，不走应用层代理。",
+    "category": "recon",
+    "binary": "nmap",
+    "proxy_mode": "none",
+    "version_cmd": "nmap --version",
+    "homepage": "https://nmap.org",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "target": { "type": "string", "description": "IP、主机名或 CIDR" },
+        "ports": { "type": "string", "description": "端口范围，如 80,443 或 1-1000" },
+        "timing": { "type": "string", "description": "时序 T0–T5，如 4 生成 -T4" },
+        "nse_scripts": { "type": "string", "description": "NSE 脚本，如 vuln" }
+      },
+      "required": ["target"]
+    },
+    "exec": {
+      "argv": [
+        ["-sT", "-sV", "-sC"],
+        ["{target}"],
+        ["-p", "{ports}"],
+        ["--script", "{nse_scripts}"],
+        ["-T", "{timing}"]
+      ],
+      "timeout_ms": 900000
+    }
+  }
+]

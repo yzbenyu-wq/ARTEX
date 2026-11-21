@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/internal/httpidentity"
 	"github.com/Autumn-27/norma/permission"
@@ -36,12 +37,64 @@ type customToolReq struct {
 	Schema      json.RawMessage `json:"schema"`
 	Agents      []string        `json:"agents"`
 	Enabled     bool            `json:"enabled"`
-	Kind        string          `json:"kind"` // command | script | http
+	Kind        string          `json:"kind"` // command | script | http | shell | recipe
 	Exec        json.RawMessage `json:"exec"`
 	Deferred    bool            `json:"deferred"`
+	Category    string          `json:"category"`
+	Binary      string          `json:"binary"`
+	ProxyMode   string          `json:"proxy_mode"`
+	VersionCmd  string          `json:"version_cmd"`
+	Homepage    string          `json:"homepage"`
 }
 
 var reToolKey = reAgentKey // 同 agent key 规则:小写字母开头 + 小写字母/数字/下划线
+
+func validCustomKind(kind string) bool {
+	switch kind {
+	case "command", "script", "http", "shell", "recipe":
+		return true
+	default:
+		return false
+	}
+}
+
+const customKindList = "command / script / http / shell / recipe"
+
+// validateToolExec enforces per-kind requirements shared by create/update/import.
+// recipe/http need a real parameter schema (the thin {args} shell can't name
+// {param} placeholders); recipe also needs a parseable argv spec.
+func validateToolExec(kind string, schema, execRaw json.RawMessage) error {
+	switch kind {
+	case "http", "recipe":
+		if !hasSchemaProps(schema) {
+			return fmt.Errorf("%s 工具必须提供参数 JSON Schema(不能留空)", kind)
+		}
+	}
+	if kind == "recipe" {
+		if _, err := parseRecipeExec(execRaw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeProxyMode(raw string) (string, bool) {
+	switch strings.TrimSpace(raw) {
+	case "":
+		return "inherit", true
+	case "inherit", "none", "http", "socks5", "env", "raw":
+		return strings.TrimSpace(raw), true
+	default:
+		return "", false
+	}
+}
+
+func customToolMeta(req customToolReq, source string) db.ToolMeta {
+	return db.ToolMeta{
+		Category: req.Category, Binary: req.Binary, ProxyMode: req.ProxyMode,
+		Source: source, VersionCmd: req.VersionCmd, Homepage: req.Homepage,
+	}
+}
 
 func (s *Server) pgCreateCustomTool(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
@@ -58,12 +111,18 @@ func (s *Server) pgCreateCustomTool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "key 需小写字母开头，仅含小写字母/数字/下划线")
 		return
 	}
-	if req.Kind != "command" && req.Kind != "script" && req.Kind != "http" && req.Kind != "shell" {
-		writeErr(w, 400, "kind 需为 command / script / http / shell")
+	if !validCustomKind(req.Kind) {
+		writeErr(w, 400, "kind 需为 "+customKindList)
 		return
 	}
-	if req.Kind == "http" && !hasSchemaProps(req.Schema) {
-		writeErr(w, 400, "http 工具必须提供参数 JSON Schema(不能留空)")
+	proxyMode, ok := normalizeProxyMode(req.ProxyMode)
+	if !ok {
+		writeErr(w, 400, "proxy_mode 需为 inherit / none / http / socks5 / env / raw")
+		return
+	}
+	req.ProxyMode = proxyMode
+	if err := validateToolExec(req.Kind, req.Schema, req.Exec); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	if exist, _ := pg.GetTool(req.Key); exist != nil {
@@ -73,6 +132,7 @@ func (s *Server) pgCreateCustomTool(w http.ResponseWriter, r *http.Request) {
 	if err := pg.CreateCustomTool(&db.Tool{
 		Key: req.Key, Description: req.Description, Schema: req.Schema, Agents: req.Agents,
 		Enabled: req.Enabled, Kind: req.Kind, Exec: req.Exec, Deferred: req.Deferred,
+		ToolMeta: customToolMeta(req, "custom"),
 	}); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -100,17 +160,28 @@ func (s *Server) pgUpdateCustomTool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if req.Kind != "command" && req.Kind != "script" && req.Kind != "http" && req.Kind != "shell" {
-		writeErr(w, 400, "kind 需为 command / script / http / shell")
+	if !validCustomKind(req.Kind) {
+		writeErr(w, 400, "kind 需为 "+customKindList)
 		return
 	}
-	if req.Kind == "http" && !hasSchemaProps(req.Schema) {
-		writeErr(w, 400, "http 工具必须提供参数 JSON Schema(不能留空)")
+	proxyMode, ok := normalizeProxyMode(req.ProxyMode)
+	if !ok {
+		writeErr(w, 400, "proxy_mode 需为 inherit / none / http / socks5 / env / raw")
 		return
+	}
+	req.ProxyMode = proxyMode
+	if err := validateToolExec(req.Kind, req.Schema, req.Exec); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	source := existing.Source
+	if strings.TrimSpace(source) == "" {
+		source = "custom"
 	}
 	if err := pg.UpdateCustomTool(&db.Tool{
 		Key: key, Description: req.Description, Schema: req.Schema, Agents: req.Agents,
 		Enabled: req.Enabled, Kind: req.Kind, Exec: req.Exec, Deferred: req.Deferred,
+		ToolMeta: customToolMeta(req, source),
 	}); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -136,9 +207,11 @@ func (s *Server) pgDeleteCustomTool(w http.ResponseWriter, r *http.Request) {
 // real tool call — it runs arbitrary command/script/http on the server, which the
 // custom-tool feature already allows, so no new capability is granted.
 type testToolReq struct {
-	Kind   string          `json:"kind"` // command | script | http
-	Exec   json.RawMessage `json:"exec"`
-	Params map[string]any  `json:"params"`
+	Kind      string          `json:"kind"` // command | script | http | recipe
+	Exec      json.RawMessage `json:"exec"`
+	Params    map[string]any  `json:"params"`
+	ProxyMode string          `json:"proxy_mode"`
+	Binary    string          `json:"binary"`
 }
 
 // pgTestCustomTool executes an exec spec once and returns its raw output + error
@@ -160,7 +233,15 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
-	tc := &actool.ToolContext{WorkingDir: s.m.dir} // run in the project dir, like a real call
+	mode, ok := normalizeProxyMode(req.ProxyMode)
+	if !ok {
+		writeErr(w, 400, "proxy_mode 需为 inherit / none / http / socks5 / env / raw")
+		return
+	}
+	tc := &actool.ToolContext{
+		WorkingDir: s.m.dir, // run in the project dir, like a real call
+		Env:        agent.ProxyEnv(s.m.ProxyAddr(), s.m.ProxyCACert()),
+	}
 	var res actool.Result
 	switch req.Kind {
 	case "command":
@@ -169,6 +250,11 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 		res, _ = s.runScriptTool(ctx, "test", req.Exec, params, tc)
 	case "http":
 		res, _ = s.runHTTPTool(ctx, req.Exec, params, tc)
+	case "recipe":
+		res, _ = s.runRecipeTool(ctx, req.Exec, params, tc, db.ToolMeta{
+			ProxyMode: mode,
+			Binary:    strings.TrimSpace(req.Binary),
+		})
 	case "shell":
 		writeErr(w, 400, "shell 类型工具是 bash 环境声明，无可执行内容")
 		return
@@ -281,6 +367,8 @@ func (s *Server) buildCustomTool(t *db.Tool) actool.CoreTool {
 			return s.runScriptTool(ctx, key, execRaw, params, tc)
 		case "http":
 			return s.runHTTPTool(ctx, execRaw, params, tc)
+		case "recipe":
+			return s.runRecipeTool(ctx, execRaw, params, tc, t.ToolMeta)
 		default:
 			return actool.Errorf("未知自定义工具类型: " + kind), nil
 		}
