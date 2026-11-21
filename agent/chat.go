@@ -95,6 +95,17 @@ func chatSystem(agentKey, dataDir, workDir string) string {
 // DefaultAssistantPrompt.
 type chatVars struct{ DataDir, Now string }
 
+// chatToolOutputChars caps each tool-result text block for chat agents. The
+// reporter repeatedly reads node/trace/traffic payloads, so a tighter cap keeps
+// later turns from re-sending the same long evidence; the SDK still spills the
+// full output to ToolOutputDir for targeted re-reads.
+func chatToolOutputChars(agentKey string) int {
+	if agentKey == "reporter" {
+		return 12000
+	}
+	return 0 // SDK default (30000 chars)
+}
+
 // Chat runs ONE turn of a conversation with the agent identified by agentKey,
 // resuming prior history keyed by sessionID. maxTurns is the per-turn agent step
 // budget (0 = unlimited). maxDuration is the wall-clock run budget per turn
@@ -155,8 +166,9 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		Compaction:         compactionConfig(c.window),
 		Todos:              actool.NewTodoStore(),
 		// large tool output spills to cmd-output/ under the session dir.
-		// 截断上限用 SDK 默认(tool.Capture 的 30000 字符)。
-		ToolOutputDir: filepath.Join(sessionWorkDir, "cmd-output"),
+		// reporter 收紧到 12000 字符；其他 agent 用 SDK 默认(tool.Capture 的 30000 字符)。
+		ToolOutputDir:      filepath.Join(sessionWorkDir, "cmd-output"),
+		MaxToolOutputChars: chatToolOutputChars(agentKey),
 		// 命中预算(步数)→ SDK 跑收尾:输出一句总结。Prompt 与收尾轮数按本 agent key 后台可编辑
 		// (自定义 agent 各自一份;留空/0 用通用默认:10 轮)。
 		Settlement:   wrapupSettlement(agentKey, nil),
