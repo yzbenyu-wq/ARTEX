@@ -82,26 +82,23 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if !ok {
 		t.Fatalf("coverage missing: %#v", overview["coverage"])
 	}
-	scopeRows, ok := coverage["scope"].([]map[string]any)
-	if !ok || len(scopeRows) != 1 {
-		t.Fatalf("task scope missing: %#v", coverage["scope"])
+	// coverage 现契约：只有分母/已测/按类型计数与 host_count，不再平铺 scope 明细。
+	// 关联企业资产必须进入分母与 root_domain 分组，证明 company scope 已归因到任务。
+	if denominator, _ := coverage["denominator"].(int); denominator < 1 {
+		t.Fatalf("company-linked asset missing from coverage denominator: %#v", coverage)
 	}
-	companyScope, ok := scopeRows[0]["company_scope"].([]map[string]any)
-	if !ok || len(companyScope) != len(inputs) {
-		t.Fatalf("company scope not expanded: %#v", scopeRows[0])
+	byType, ok := coverage["by_type"].([]db.CoverageByType)
+	if !ok {
+		t.Fatalf("by_type missing: %#v", coverage["by_type"])
 	}
-	kinds := make(map[string]string, len(companyScope))
-	for _, rule := range companyScope {
-		kinds[fmt.Sprint(rule["kind"])] = fmt.Sprint(rule["value"])
-	}
-	for _, input := range inputs {
-		if kinds[input.Kind] != input.Value {
-			t.Errorf("scope %s=%q want %q", input.Kind, kinds[input.Kind], input.Value)
+	var domainTotal int
+	for _, row := range byType {
+		if row.Type == "root_domain" {
+			domainTotal = row.Total
 		}
 	}
-	keywords, ok := scopeRows[0]["company_keywords"].([]string)
-	if !ok || len(keywords) != 1 || keywords[0] != keyword {
-		t.Fatalf("company keywords missing: %#v", scopeRows[0]["company_keywords"])
+	if domainTotal < 1 {
+		t.Fatalf("company asset not counted under root_domain: %#v", byType)
 	}
 	if hc, _ := coverage["host_count"].(int); hc < 1 {
 		t.Fatalf("company asset host not counted in agent context: %#v", coverage["host_count"])

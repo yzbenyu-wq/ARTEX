@@ -72,11 +72,18 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Fatalf("bad task payload: %v", out)
 	}
 
-	// the exploration owns goal node(s) — goal seeding is async, poll briefly
+	// the exploration owns goal node(s) — goal seeding runs in a background
+	// goroutine after launchTask, so wait with a generous deadline instead of a
+	// fixed few-second window (3s flakes when other packages load the same DB).
+	const goalWait = 30 * time.Second
 	var goals []*db.Node
-	for i := 0; i < 30; i++ {
+	deadline := time.Now().Add(goalWait)
+	for {
 		goals, err = m.pg.Exploration(expID).ListByKind("goal", 10)
-		if err != nil || len(goals) > 0 {
+		if err == nil && len(goals) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -85,7 +92,7 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(goals) < 1 {
-		t.Fatalf("expected goal nodes seeded, got %d", len(goals))
+		t.Fatalf("expected goal nodes seeded within %s, got %d", goalWait, len(goals))
 	}
 
 	// it shows in the task list
