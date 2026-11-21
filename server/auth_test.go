@@ -3,6 +3,9 @@ package server
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -59,6 +62,92 @@ func TestAuthInitFailsClosedWhenDataSourceUnavailable(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "token") {
 		t.Fatalf("读失败时不应签发 token: %s", w.Body.String())
+	}
+}
+
+// JWT 密钥必须落在持久目录：Docker 里 /app 是容器层，key 放那儿每次重建容器
+// 都会重新生成，所有人被登出。同时旧的存放位置要一次性迁移过来，保住已有会话。
+func TestJWTKeyGeneratedOnceAndReused(t *testing.T) {
+	keys, data := t.TempDir(), t.TempDir()
+	first, err := loadOrCreateJWTKey(keys, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) < 32 {
+		t.Fatalf("key too short: %d", len(first))
+	}
+	second, err := loadOrCreateJWTKey(keys, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("second load regenerated the key")
+	}
+	fi, err := os.Stat(filepath.Join(keys, jwtKeyFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("key perm=%v want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestJWTKeyMigratesFromDataDir(t *testing.T) {
+	keys, data := t.TempDir(), t.TempDir()
+	legacy := strings.Repeat("k", 32)
+	legacyPath := filepath.Join(data, jwtKeyFilename)
+	if err := os.WriteFile(legacyPath, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadOrCreateJWTKey(keys, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != legacy {
+		t.Fatal("migration did not preserve the existing key")
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy key still present: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(keys, jwtKeyFilename)); err != nil {
+		t.Fatalf("new key missing: %v", err)
+	}
+}
+
+func TestJWTKeyMigratesFromLegacyDir(t *testing.T) {
+	keys, data, legacyDir := t.TempDir(), t.TempDir(), t.TempDir()
+	legacy := strings.Repeat("b", 32)
+	if err := os.WriteFile(filepath.Join(legacyDir, jwtKeyFilename), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadOrCreateJWTKey(keys, data, legacyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != legacy {
+		t.Fatal("legacy dir migration did not preserve the key")
+	}
+}
+
+func TestJWTKeyKeepsExistingOverLegacy(t *testing.T) {
+	keys, data := t.TempDir(), t.TempDir()
+	current := strings.Repeat("a", 32)
+	legacyPath := filepath.Join(data, jwtKeyFilename)
+	if err := os.WriteFile(filepath.Join(keys, jwtKeyFilename), []byte(current), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte(strings.Repeat("z", 32)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadOrCreateJWTKey(keys, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != current {
+		t.Fatal("existing key was overwritten by legacy migration")
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy file should be left untouched when a key already exists: %v", err)
 	}
 }
 

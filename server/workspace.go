@@ -77,6 +77,11 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]wsEntry, 0, len(ents))
 	for _, e := range ents {
+		// 内部簿记目录（任务删除暂存 .delete-staging、归档暂存 .staging 等）以点开头，
+		// 不属于用户可见的工作区内容，文件管理器里一律不列。
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
 		info, err := e.Info()
 		if err != nil {
 			continue

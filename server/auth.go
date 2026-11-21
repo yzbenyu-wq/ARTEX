@@ -45,25 +45,21 @@ func validatePassword(pw string) string {
 	return ""
 }
 
-// loadOrCreateJWTKey reads the 32-byte signing key from keyDir/jwt.key. keyDir is
-// the project base dir (next to the executable), NOT the browsable workspace root
-// (dataDir) — the signing key must never be listable/downloadable via the file
-// manager. Legacy installs kept it at dataDir/jwt.key; if present there and not yet
-// at the new location, it is migrated (key preserved, so sessions stay valid) and
-// the old file removed so it disappears from the workspace. On first run a random
-// key is generated and persisted.
-func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
+// loadOrCreateJWTKey reads the 32-byte signing key from keyDir/jwt.key. keyDir
+// must be a persistent, non-browsable location: the Docker deployment mounts a
+// dedicated volume there so container re-creation doesn't log everyone out, and
+// it is never inside the workspace root (dataDir) where the file manager could
+// list or download it. Legacy builds kept the key at dataDir/jwt.key or next to
+// the executable (BaseDir, passed via legacyDirs); a key found there is migrated
+// once (key preserved, so sessions stay valid) and the old file removed. On first
+// run a random key is generated and persisted.
+func loadOrCreateJWTKey(keyDir, dataDir string, legacyDirs ...string) ([]byte, error) {
+	if err := os.MkdirAll(keyDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create jwt key dir: %w", err)
+	}
 	path := filepath.Join(keyDir, jwtKeyFilename)
-	// one-time migration out of the old in-workspace location.
-	if legacy := filepath.Join(dataDir, jwtKeyFilename); legacy != path {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if data, rerr := os.ReadFile(legacy); rerr == nil {
-				if werr := os.WriteFile(path, data, 0o600); werr == nil {
-					_ = os.Remove(legacy)
-					log.Printf("[auth] JWT key 已从 %s 迁移到 %s（移出可浏览工作区）", legacy, path)
-				}
-			}
-		}
+	for _, dir := range append([]string{dataDir}, legacyDirs...) {
+		migrateJWTKey(path, filepath.Join(dir, jwtKeyFilename))
 	}
 	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) >= 32 {
 		return []byte(strings.TrimSpace(string(data))), nil
@@ -81,6 +77,27 @@ func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 	}
 	log.Printf("[auth] 新 JWT key 已写入 %s", path)
 	return buf, nil
+}
+
+// migrateJWTKey copies a valid legacy key to dst (never overwriting an existing
+// key) and removes the old copy so it stops being exposed.
+func migrateJWTKey(dst, src string) {
+	if dst == src {
+		return
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return
+	}
+	data, err := os.ReadFile(src)
+	if err != nil || len(strings.TrimSpace(string(data))) < 32 {
+		return
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		log.Printf("[auth] JWT key 迁移失败 %s -> %s: %v", src, dst, err)
+		return
+	}
+	_ = os.Remove(src)
+	log.Printf("[auth] JWT key 已从 %s 迁移到 %s", src, dst)
 }
 
 // signJWT issues a 7-day HS256 token for user ARTEX.

@@ -30,8 +30,13 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
     && playwright-cli --help \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
+# red-skill 的 check/update 需要 PyYAML；find/show 不依赖，但固化避免容器重建后丢失。
+RUN python3 -m pip install --no-cache-dir pyyaml
 WORKDIR /app
 ENV TZ=Asia/Shanghai
+# JWT 签名密钥目录。必须挂持久卷：放在 /app（容器层）里每次重建容器都会换 key，
+# 所有人被登出。compose 把 ./keys 绑到这里；单独 docker run 时 VOLUME 也会兜底。
+ENV ARTEX_KEYS_DIR=/app/keys
 # 预编译好的对应架构二进制（dist/amd64/artex 或 dist/arm64/artex）
 COPY dist/${TARGETARCH}/artex /app/artex
 # 守护启动脚本：进程退出后按退出码决定是否重新拉起，页面一键更新靠它完成换装。
@@ -40,8 +45,8 @@ COPY dist/${TARGETARCH}/artex /app/artex
 COPY start.sh /app/start.sh
 RUN chmod +x /app/artex /app/start.sh
 COPY skills/ /app/skills/
-# data/（SQLite + jwt.key）持久化点
-VOLUME ["/app/data"]
+# data/（SQLite）与 keys/（jwt.key）持久化点
+VOLUME ["/app/data", "/app/keys"]
 EXPOSE 8787 8788
 ENTRYPOINT ["/app/start.sh"]
 CMD ["-addr", ":8787", "-proxy", ":8788"]

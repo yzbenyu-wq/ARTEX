@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,6 +43,16 @@ func printBanner(addr string) {
 		version, runtime.GOOS, runtime.GOARCH, runtime.Version(), addr)
 }
 
+// defaultKeysDir keeps jwt.key out of the browsable data/ workspace. Docker
+// deployments set ARTEX_KEYS_DIR to a mounted volume so sessions survive
+// container re-creation.
+func defaultKeysDir() string {
+	if v := strings.TrimSpace(os.Getenv("ARTEX_KEYS_DIR")); v != "" {
+		return v
+	}
+	return config.BaseDir()
+}
+
 // main only maps run's result onto the process exit code. The exit code is part
 // of the update protocol — the supervising start script reads it to decide
 // whether to relaunch us (see selfupdate.ExitRestart) — so the body has to live
@@ -54,6 +65,7 @@ func run() int {
 	var (
 		addr    = flag.String("addr", ":8787", "HTTP listen address")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
+		keysDir = flag.String("keys", defaultKeysDir(), "directory holding jwt.key; must survive restarts and must not be inside the data/ workspace (default: $ARTEX_KEYS_DIR, else next to the executable)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
 	)
 	flag.Parse()
@@ -112,7 +124,12 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf("[config] skill 目录: %s", skillDir)
-	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	keysPath := *keysDir
+	if abs, err := filepath.Abs(keysPath); err == nil {
+		keysPath = abs
+	}
+	log.Printf("[config] jwt key 目录: %s", keysPath)
+	srv := server.New(ctx, mgr, skillDir, *dataDir, keysPath)
 	defer srv.Close()
 	httpSrv := &http.Server{
 		Addr:              *addr,

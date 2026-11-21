@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/config"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/intercept/jev"
@@ -171,7 +172,7 @@ type triggeredRun struct {
 }
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {
-	key, err := loadOrCreateJWTKey(keyDir, dataDir)
+	key, err := loadOrCreateJWTKey(keyDir, dataDir, config.BaseDir())
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}

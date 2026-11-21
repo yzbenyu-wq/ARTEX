@@ -136,7 +136,7 @@ docker compose up -d          # 拉取 ghcr.io/yzbenyu-wq/artex 镜像 + postgre
 # → http://localhost:8787
 ```
 
-镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
+镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills`、`./data` 与 `./keys` 以绑定挂载持久化（`./keys` 只存 `jwt.key`，不放进工作区）。
 
 `.env` 中默认 `ARTEX_IMAGE=ghcr.io/yzbenyu-wq/artex`，`ARTEX_TAG=latest` 使用最新镜像，也可固定为 `v0.3.17`（完整镜像地址 `ghcr.io/yzbenyu-wq/artex:v0.3.17`）。镜像支持 `linux/amd64` 和 `linux/arm64`，Docker 会自动选择与宿主机匹配的架构，ARM64 Kali 无需自行编译。初次部署请修改 `POSTGRES_PASSWORD`；运行服务无需任何镜像发布凭据。
 
@@ -191,7 +191,7 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 ## 更新升级
 
-> 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（jwt.key / SQLite 等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
+> 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（SQLite 等）、`./keys`（jwt.key，保登录会话）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data`、`./keys` 与数据库。
 
 ### 方式一：页面一键更新（推荐）
 
@@ -243,7 +243,7 @@ curl --fail http://127.0.0.1:8787/api/health
 docker compose logs --tail=50 artex
 ```
 
-继续使用原部署目录和 Compose 项目名称，确保 `./data`、`./skills` 和 PostgreSQL 数据卷仍指向原数据。迁移后程序从 `yzbenyu-wq/ARTEX` 检查在线更新；后续可用页面更新程序或上述命令更新整个镜像。
+继续使用原部署目录和 Compose 项目名称，确保 `./data`、`./keys`、`./skills` 和 PostgreSQL 数据卷仍指向原数据（旧版把 jwt.key 放在 `./data` 或可执行文件旁，启动时会自动迁移到 `./keys`，登录会话不丢）。迁移后程序从 `yzbenyu-wq/ARTEX` 检查在线更新；后续可用页面更新程序或上述命令更新整个镜像。
 
 首次迁移已有 Docker 部署时，将已校验的新 ARM64 ZIP 解压到宿主机，备份原程序，然后只替换已有容器中的 `/app/artex`。例如现有容器名为 `artex-artex-1`：
 
