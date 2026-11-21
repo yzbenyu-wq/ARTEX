@@ -1,0 +1,62 @@
+[
+  {
+    "query": "有登录态怎么测越权",
+    "expect": ["kb:idor-test", "kb:authbypass-test", "skill:offensive-idor"],
+    "top": 3
+  },
+  {
+    "query": "目标有文件上传",
+    "expect": ["kb:file-upload-test", "skill:offensive-file-upload"],
+    "top": 3
+  },
+  {
+    "query": "云 IDE Codex 编程台",
+    "expect": ["kb:cloud-ide-codex-rce-chain"],
+    "top": 3
+  },
+  {
+    "query": "Kerberos 委派怎么打",
+    "expect": ["skill:offensive-active-directory", "skill:offensive-netexec"],
+    "top": 3
+  },
+  {
+    "query": "iOS 逆向",
+    "expect": ["skill:offensive-mobile", "skill:rea"],
+    "top": 3
+  },
+  {
+    "query": "K8s 容器逃逸",
+    "expect": ["skill:offensive-k8s-attacks", "skill:offensive-container-escape"],
+    "top": 3
+  },
+  {
+    "query": "SQL 注入 WAF 绕过",
+    "expect": ["kb:injection-test", "skill:offensive-sqli", "kb:waf-bypass", "skill:offensive-waf-bypass"],
+    "top": 3
+  },
+  {
+    "query": "GraphQL 接口测试",
+    "expect": ["kb:graphql-test", "skill:offensive-graphql"],
+    "top": 3
+  },
+  {
+    "query": "写 SRC 漏洞报告",
+    "expect": ["rule:vuln-report-format", "skill:offensive-reporting"],
+    "top": 3
+  },
+  {
+    "query": "无线 WPA3",
+    "expect": ["skill:offensive-wpa3-sae", "skill:offensive-wifi"],
+    "top": 3
+  },
+  {
+    "query": "浏览器自动化用哪个 MCP",
+    "expect": ["rule:playwright-browser-mcp"],
+    "top": 3
+  },
+  {
+    "query": "支付并发双花",
+    "expect": ["kb:logic-test", "kb:race-condition-test", "skill:offensive-business-logic", "skill:offensive-race-condition"],
+    "top": 3
+  }
+]

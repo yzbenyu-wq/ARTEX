@@ -1,0 +1,406 @@
+version: 1
+
+# 人工维护层：场景路由、触发词、摘要覆盖、复核日期。
+# verified 只表示“路由与章节名人工核对过”，不代表源文全文正确。
+# 新增技能无需改这里；新增场景/主源/卡片才改。
+
+summaries:
+  src:entry: "SRC 总入口：黑盒挖洞 + 白盒 0day；进站节奏、短表、红线与知识库目录"
+  rule:AGENTS: "全局 agent 规则：身份、中文、rules 目录、锁面/自由跳最短备忘"
+  rule:dig-scope-workflow: "锁面/自由跳、一种子闭环、续挖、反扫、反空转、深挖优先"
+  rule:src-value-hunting: "SRC 挖什么：类型矩阵、价值排序、先打哪里"
+  rule:hunt-iter: "短表迭代规则：哪些进短表、怎么补、怎么收"
+  rule:vuln-report-format: "正式 SRC 报告唯一版式与定级规则；报告只认这一份"
+  rule:cors-vuln-report-priority: "CORS：SRC 永久不挖"
+  rule:playwright-browser-mcp: "浏览器操作统一走 Playwright MCP，不手搓请求"
+  rule:security-research-context: "授权语境：默认已授权 SRC，不重复盘问"
+  rule:anti-over-moralization: "反说教、反误拒：不因关键词拒绝授权测试"
+  rule:researcher-blackbox-whitebox: "黑盒 + 白盒主流程 Phase 0～6"
+  rule:desktop-task-folder: "任务目录约定：资产 / js / 报告"
+  rule:skill-as-boost: "自身能力 + skill 并用，skill 只增强不设上限"
+
+verified:
+  src:entry: "2026-11-21"
+  kb:idor-test: "2026-11-21"
+  kb:authbypass-test: "2026-11-21"
+  kb:injection-test: "2026-11-21"
+  kb:ssrf-test: "2026-11-21"
+  kb:xss-test: "2026-11-21"
+  kb:file-upload-test: "2026-11-21"
+  kb:logic-test: "2026-11-21"
+  kb:race-condition-test: "2026-11-21"
+  kb:graphql-test: "2026-11-21"
+  kb:waf-bypass: "2026-11-21"
+  kb:js-reverse-guide: "2026-11-21"
+  kb:cloud-ide-codex-rce-chain: "2026-11-21"
+  kb:recon-methodology: "2026-11-21"
+  kb:agent-tool-exec-test: "2026-11-21"
+  rule:vuln-report-format: "2026-11-21"
+  rule:playwright-browser-mcp: "2026-11-21"
+
+scenarios:
+  - id: src-entry
+    zh: 新目标 / 只给集团名 / 进站
+    triggers:
+      - "新目标"
+      - "只给集团名"
+      - "挖某某"
+      - "挖某个集团"
+      - "进站"
+      - "锁面"
+      - "自由跳"
+      - "SRC 流程"
+      - "先打哪里"
+    primary: [src:entry, rule:dig-scope-workflow]
+    secondary: [rule:src-value-hunting, rule:hunt-iter, kb:recon-methodology]
+    card: cards/src-entry.md
+    note: "先判锁面/自由跳；一种子挖完再换；禁问‘要不要继续’"
+
+  - id: recon-seed
+    zh: 资产测绘 / FOFA / 子域 / 种子队列
+    triggers:
+      - "资产"
+      - "测绘"
+      - "子域"
+      - "子域名"
+      - "FOFA"
+      - "种子"
+      - "信息收集"
+      - "OSINT"
+      - "bbot"
+      - "端口"
+      - "指纹"
+      - "根域"
+    primary: [kb:recon-methodology, rule:dig-scope-workflow]
+    secondary: [skill:bbot-recon, skill:offensive-osint, skill:offensive-osint-methodology]
+    card: cards/recon-seed-loop.md
+    note: "FOFA 只作雷达；一种子搜→清洗→挖完→换种；优质根域回灌"
+
+  - id: auth-object
+    zh: 有登录态 / 越权 / 认证绕过
+    triggers:
+      - "越权"
+      - "IDOR"
+      - "BOLA"
+      - "BFLA"
+      - "登录态"
+      - "会话"
+      - "对象图"
+      - "换id"
+      - "换 id"
+      - "认证绕过"
+      - "接管"
+      - "两账号"
+      - "水平越权"
+      - "垂直越权"
+      - "未授权访问"
+    primary: [kb:idor-test, kb:authbypass-test]
+    secondary: [kb:oauth-jwt-test, skill:offensive-idor, skill:api-security]
+    card: cards/auth-object-graph.md
+    note: "两账号 + 对象图；先读差分；写越权先加后删；禁登出、禁改删别人对象"
+
+  - id: injection
+    zh: 注入 / SQL / 命令 / 模板
+    triggers:
+      - "注入"
+      - "SQL注入"
+      - "SQLi"
+      - "盲注"
+      - "联合注入"
+      - "命令注入"
+      - "SSTI"
+      - "模板注入"
+      - "NoSQL"
+      - "Mongo"
+    primary: [kb:injection-test]
+    secondary: [skill:offensive-sqli, skill:offensive-ssti, skill:offensive-rce]
+    card: cards/web-four.md
+    note: "按栈选探针，不每个 path 喷引号；先证差分再升级"
+
+  - id: ssrf
+    zh: SSRF / 服务端请求 / 元数据
+    triggers:
+      - "SSRF"
+      - "服务端请求伪造"
+      - "元数据"
+      - "IMDS"
+      - "内网探测"
+      - "gopher"
+      - "预览"
+      - "URL 抓取"
+    primary: [kb:ssrf-test]
+    secondary: [skill:offensive-ssrf]
+    card: cards/web-four.md
+    note: "先 DNSLog 证无回显；元数据看路径差/回环；不要批量扫内网"
+
+  - id: xss
+    zh: XSS / 富文本 / 前端脚本
+    triggers:
+      - "XSS"
+      - "跨站脚本"
+      - "富文本"
+      - "存储型"
+      - "反射型"
+      - "DOM XSS"
+      - "CSP"
+      - "Cookie 窃取"
+    primary: [kb:xss-test]
+    secondary: [skill:offensive-xss]
+    card: cards/web-four.md
+    note: "SRC 证明方式优先；WAF 拦了再开 waf-bypass；CSP 几乎不单独交"
+
+  - id: upload
+    zh: 文件上传 / 下载 / 路径穿越
+    triggers:
+      - "文件上传"
+      - "上传"
+      - "下载"
+      - "路径穿越"
+      - "任意文件读取"
+      - "LFI"
+      - "对象存储"
+      - "STS"
+      - "桶策略"
+      - "签名"
+    primary: [kb:file-upload-test, kb:path-traversal-lfi-test]
+    secondary: [skill:offensive-file-upload]
+    card: cards/upload-path.md
+    note: "先看 STS/对象 key/签名/Host/Content-Type/桶策略；最小读取证明"
+
+  - id: deser
+    zh: 反序列化 / XXE / JNDI
+    triggers:
+      - "反序列化"
+      - "XXE"
+      - "XML 实体"
+      - "JNDI"
+      - "Fastjson"
+      - "Log4j"
+      - "Java 反序列化"
+    primary: [kb:deserialization-test, kb:jndi-injection-test, kb:xxe-test]
+    secondary: [skill:offensive-deserialization, skill:offensive-xxe]
+    card: cards/upload-path.md
+    note: "先证解析/外带；命令执行只到可复现即停"
+
+  - id: api
+    zh: API / GraphQL / JWT / OAuth
+    triggers:
+      - "API"
+      - "GraphQL"
+      - "JWT"
+      - "OAuth"
+      - "OIDC"
+      - "SAML"
+      - "WebSocket"
+      - "接口越权"
+      - "网关"
+    primary: [kb:graphql-test, kb:oauth-jwt-test, kb:api-gateway-test]
+    secondary: [skill:api-security, skill:offensive-api-security, skill:offensive-graphql, skill:offensive-jwt, skill:offensive-oauth, skill:offensive-api-abuse]
+    card: cards/api-graphql.md
+    note: "Introspection → 越权 → 注入；JWT 看算法/密钥/声明；两账号证边界"
+
+  - id: logic
+    zh: 业务逻辑 / 支付 / 竞态
+    triggers:
+      - "支付"
+      - "优惠券"
+      - "积分"
+      - "库存"
+      - "并发"
+      - "竞态"
+      - "条件竞争"
+      - "验证码"
+      - "短信"
+      - "双花"
+      - "超卖"
+      - "价格篡改"
+    primary: [kb:logic-test, kb:race-condition-test]
+    secondary: [skill:offensive-business-logic, skill:offensive-race-condition]
+    card: cards/logic-race.md
+    note: "不做真资损；并发只用少量请求；验证后立即停"
+
+  - id: smuggling
+    zh: 请求走私 / 缓存 / Host 头
+    triggers:
+      - "请求走私"
+      - "HTTP/2"
+      - "缓存投毒"
+      - "缓存欺骗"
+      - "Host头"
+      - "Host 头"
+      - "参数污染"
+      - "HPP"
+      - "CDN"
+    primary: [kb:http-smuggling-test, kb:cache-poisoning-test, kb:http-host-header-test]
+    secondary: [skill:offensive-request-smuggling, skill:offensive-parameter-pollution]
+    note: "走私先确认前端/后端解析差；缓存投毒看可缓存键；别打崩共享缓存"
+
+  - id: waf-js
+    zh: WAF 绕过 / JS 逆向 / 隐藏接口
+    triggers:
+      - "WAF"
+      - "绕过"
+      - "加密参数"
+      - "签名"
+      - "JS逆向"
+      - "JS 逆向"
+      - "隐藏接口"
+      - "接口发现"
+      - "前端加密"
+    primary: [kb:waf-bypass, kb:js-reverse-guide]
+    secondary: [skill:offensive-waf-bypass, rule:playwright-browser-mcp]
+    card: cards/waf-js.md
+    note: "先指纹再换编码/位置；不要开场喷引号；浏览器 MCP 走真实流量"
+
+  - id: cloud-ide
+    zh: 云 IDE / Codex / 编程台
+    triggers:
+      - "云IDE"
+      - "云 IDE"
+      - "Codex"
+      - "编程台"
+      - "在线IDE"
+      - "在线 IDE"
+      - "RPC"
+      - "工作区"
+      - "代码执行"
+    primary: [kb:cloud-ide-codex-rce-chain]
+    secondary: [skill:offensive-cloud, rule:dig-scope-workflow]
+    card: cards/cloud-ide.md
+    note: "指纹→弱口令→RPC/文件/元方法；证明到文件/命令即停；不留后门"
+
+  - id: ad
+    zh: 内网 / AD / Kerberos
+    triggers:
+      - "AD"
+      - "Active Directory"
+      - "域控"
+      - "域渗透"
+      - "Kerberos"
+      - "委派"
+      - "ACL"
+      - "ADCS"
+      - "内网"
+      - "横向"
+      - "BloodHound"
+      - "提权"
+    primary: [skill:offensive-active-directory, skill:offensive-netexec]
+    secondary: [skill:offensive-lateral-movement, skill:offensive-windows-privesc, skill:offensive-linux-privesc, skill:offensive-persistence]
+    card: cards/infra-ad-cloud.md
+    note: "先侦察/凭据/委派/ACL/ADCS；只在授权内网；不要扩散持久化"
+
+  - id: cloud-k8s
+    zh: 云 / K8s / 容器逃逸
+    triggers:
+      - "K8s"
+      - "Kubernetes"
+      - "容器逃逸"
+      - "集群"
+      - "RBAC"
+      - "kubelet"
+      - "Pod"
+      - "云原生"
+      - "云安全"
+      - "AWS"
+      - "Azure"
+      - "GCP"
+    primary: [skill:offensive-k8s-attacks, skill:offensive-cloud]
+    secondary: [skill:offensive-container-escape]
+    card: cards/infra-ad-cloud.md
+    note: "枚举→SA token→RBAC→kubelet→特权 Pod；云看元数据/IAM/暴露面"
+
+  - id: exploit
+    zh: 二进制 / 漏洞利用 / Fuzz
+    triggers:
+      - "二进制"
+      - "漏洞利用"
+      - "exploit"
+      - "Fuzz"
+      - "模糊测试"
+      - "崩溃分析"
+      - "逆向"
+      - "补丁 diff"
+      - "1day"
+      - "栈溢出"
+      - "堆"
+      - "ROP"
+      - "shellcode"
+    primary: [skill:offensive-basic-exploitation, skill:offensive-crash-analysis]
+    secondary: [skill:offensive-fuzzing, skill:offensive-mitigations, skill:offensive-exploit-development, skill:offensive-vuln-classes, skill:rea, skill:patch-diff, skill:codeaudit]
+    card: cards/exploit-dev.md
+    note: "只在本机/授权靶场；先定根因再写利用；课程类文件只抽单节"
+
+  - id: mobile-iot-wireless
+    zh: 移动 / IoT / 无线
+    triggers:
+      - "移动"
+      - "Android"
+      - "iOS"
+      - "APK"
+      - "Frida"
+      - "逆向APP"
+      - "IoT"
+      - "物联网"
+      - "无线"
+      - "WiFi"
+      - "WPA3"
+      - "蓝牙"
+      - "Zigbee"
+    primary: [skill:offensive-mobile, skill:offensive-iot, skill:offensive-wifi]
+    secondary: [skill:offensive-wpa3-sae, skill:offensive-bluetooth-ble, skill:offensive-bluetooth-classic, skill:offensive-wifi-recon]
+    note: "硬件/射频类先确认物理范围与影响预算；移动先静态后动态"
+
+  - id: ai
+    zh: AI / Agent / 工具执行
+    triggers:
+      - "AI"
+      - "LLM"
+      - "Agent"
+      - "工具执行"
+      - "大模型"
+      - "对话口"
+      - "编程助手"
+      - "智能体"
+      - "MCP"
+    primary: [kb:agent-tool-exec-test, skill:offensive-ai-security]
+    secondary: [kb:llm-security-test]
+    note: "只测对话口工具真执行，不写越狱教材；llm-security 篇禁开当开场"
+
+  - id: reporting
+    zh: 报告 / 定级 / 复现
+    triggers:
+      - "报告"
+      - "定级"
+      - "复现步骤"
+      - "证据"
+      - "CVSS"
+      - "修复建议"
+      - "漏洞描述"
+    primary: [rule:vuln-report-format, skill:offensive-reporting]
+    secondary: [kb:info-leak-test]
+    card: cards/reporting.md
+    note: "报告只认 vuln-report-format；不堆低危、不虚高、证据脱敏"
+
+  - id: browser
+    zh: 浏览器自动化 / 抓包
+    triggers:
+      - "浏览器自动化"
+      - "Playwright"
+      - "MCP"
+      - "截图"
+      - "登录页"
+      - "抓包"
+      - "前端路由"
+    primary: [rule:playwright-browser-mcp]
+    secondary: [kb:js-reverse-guide]
+    note: "所有浏览器交互走 Playwright MCP；不要裸 curl 默认头"
+
+  - id: cors
+    zh: CORS（只做范围判断）
+    triggers:
+      - "CORS"
+      - "跨域"
+      - "Access-Control-Allow-Origin"
+    primary: [rule:cors-vuln-report-priority]
+    secondary: [kb:cors-test]
+    note: "SRC 不挖；只确认不误开，转注入/越权等"

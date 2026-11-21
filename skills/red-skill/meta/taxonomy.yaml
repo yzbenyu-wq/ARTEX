@@ -1,0 +1,68 @@
+version: 1
+
+# 16 个域。dirs 填 library/ 下的领域目录名；特殊类型由脚本固定映射：
+# 00-src 下的 src-entry / src-kb / src-rules。
+groups:
+  - id: src-flow
+    zh: SRC 流程与规则
+    dirs: []
+
+  - id: src-entry
+    zh: SRC 总入口
+    dirs: []
+
+  - id: src-kb
+    zh: SRC 中文知识库
+    dirs: []
+
+  - id: src-rules
+    zh: 全局规则与约束
+    dirs: []
+
+  - id: web
+    zh: Web 与 API 漏洞
+    dirs: [01-web-api]
+
+  - id: recon
+    zh: 侦察与资产测绘
+    dirs: [02-recon]
+
+  - id: cloud-container
+    zh: 云与容器
+    dirs: [03-cloud-container]
+
+  - id: internal
+    zh: 内网、AD 与红队基础设施
+    dirs: [04-internal]
+
+  - id: mobile-iot-wireless
+    zh: 移动、IoT 与无线
+    dirs: [05-mobile-iot-wireless]
+
+  - id: binary
+    zh: 二进制、逆向与代码审计
+    dirs: [06-binary]
+
+  - id: supply-cicd
+    zh: 供应链与 CI/CD
+    dirs: [07-supply-cicd]
+
+  - id: social
+    zh: 社工与钓鱼
+    dirs: [08-social]
+
+  - id: forensics
+    zh: 取证、反取证与 C2
+    dirs: [09-forensics]
+
+  - id: crypto
+    zh: 密码学与 TLS
+    dirs: [10-crypto]
+
+  - id: ai
+    zh: AI 与 Agent 安全
+    dirs: [11-ai]
+
+  - id: utility
+    zh: 工具与报告
+    dirs: [12-utility]
