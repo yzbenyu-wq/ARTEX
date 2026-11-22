@@ -135,6 +135,30 @@ func applyStaticSed(content string, subs []staticSedSubstitution) (string, bool)
 	return content, true
 }
 
+// systemToolPath accepts name only when the shell would pick the system copy:
+// the looked-up path itself must be /bin/<name> or /usr/bin/<name>. The final
+// target may live elsewhere (Ubuntu symlinks cat to its coreutils build) as
+// long as it is a native executable. Shadows earlier in PATH are rejected.
+func systemToolPath(name string) (string, bool) {
+	base := filepath.Base(name)
+	if name != base && name != "/bin/"+base && name != "/usr/bin/"+base {
+		return "", false
+	}
+	path := name
+	if name == base {
+		found, err := exec.LookPath(name)
+		if err != nil || (found != "/bin/"+base && found != "/usr/bin/"+base) {
+			return "", false
+		}
+		path = found
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || !nativeInterpreterFile(resolved) {
+		return "", false
+	}
+	return resolved, true
+}
+
 func generatedSedSnapshot(stmt *syntax.Stmt, args []*syntax.Word, dir, target string, generated map[string]scriptReference) (string, string, bool) {
 	if len(args) != 3 {
 		return "", "", false
@@ -143,12 +167,7 @@ func generatedSedSnapshot(stmt *syntax.Stmt, args []*syntax.Word, dir, target st
 	if !known || (name != "sed" && name != "/bin/sed" && name != "/usr/bin/sed") {
 		return "", "", false
 	}
-	executable, err := exec.LookPath(name)
-	if err != nil {
-		return "", "", false
-	}
-	executable, err = filepath.EvalSymlinks(executable)
-	if err != nil || (executable != "/bin/sed" && executable != "/usr/bin/sed") || !nativeInterpreterFile(executable) {
+	if _, ok := systemToolPath(name); !ok {
 		return "", "", false
 	}
 	program, known := staticWord(args[1])
@@ -306,13 +325,7 @@ func staticSedPrefixKnown(tree *syntax.File, target *syntax.Stmt, remaining *int
 					safe = false
 				}
 			case "cat", "mkdir", "chmod", "sed":
-				executable, err := exec.LookPath(name)
-				if err != nil {
-					safe = false
-					break
-				}
-				executable, err = filepath.EvalSymlinks(executable)
-				if err != nil || (executable != "/bin/"+base && executable != "/usr/bin/"+base) || !nativeInterpreterFile(executable) {
+				if _, ok := systemToolPath(name); !ok {
 					safe = false
 					break
 				}
