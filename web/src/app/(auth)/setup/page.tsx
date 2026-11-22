@@ -64,21 +64,20 @@ export default function SetupPage() {
   if (checking) return null;
 
   return (
-    <div className="flex h-dvh">
-      {/* Left panel */}
-      <div className="hidden flex-col items-center justify-center bg-primary p-12 text-center lg:flex lg:w-1/3">
-        <div className="relative flex items-center justify-center">
-          <div className="absolute size-80 rounded-full border border-primary-foreground/10" />
-          <div className="absolute size-60 rounded-full border border-primary-foreground/15" />
-          <div className="absolute size-40 rounded-full border border-primary-foreground/20" />
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="ARTEX" width={160} height={160} className="relative brightness-0 invert" />
-        </div>
-      </div>
-
-      {/* Right panel */}
-      <div className="flex w-full items-center justify-center bg-background p-8 lg:w-2/3">
-        <div className="w-full max-w-md space-y-10 py-24 lg:py-32">
+    <div className="flex min-h-dvh items-center justify-center bg-background p-8">
+      <div className="w-full max-w-md space-y-10 py-24 lg:py-32">
+        <div className="space-y-4">
+          <div className="flex justify-center">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/login-mascot.png"
+              alt="ARTEX"
+              width={220}
+              height={211}
+              className="select-none"
+              draggable={false}
+            />
+          </div>
           <div className="space-y-4 text-center">
             <h2 className="text-2xl font-medium tracking-tight">
               {unavailable ? t("auth.statusUnknown") : t("auth.initPassword")}
@@ -87,45 +86,45 @@ export default function SetupPage() {
               {unavailable ? t("auth.setupUnavailable") : t("auth.setupWelcome")}
             </p>
           </div>
-          {unavailable ? (
-            <div className="flex flex-col gap-4">
-              {Boolean(error) && <p className="text-center text-sm text-destructive">{localizedError(error, t)}</p>}
-              <Button type="button" className="w-full" onClick={() => window.location.reload()}>
-                {t("common.retry")}
-              </Button>
-            </div>
-          ) : (
-            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="password">{t("account.newPassword")}</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={t("auth.minPlaceholder")}
-                  autoFocus
-                  autoComplete="new-password"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="confirm">{t("auth.confirmPassword")}</Label>
-                <Input
-                  id="confirm"
-                  type="password"
-                  value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
-                  placeholder={t("auth.reenterPassword")}
-                  autoComplete="new-password"
-                />
-              </div>
-              {Boolean(error) && <p className="text-sm text-destructive">{localizedError(error, t)}</p>}
-              <Button type="submit" className="w-full" disabled={loading || !password || !confirm}>
-                {loading ? t("auth.saving") : t("auth.setupAndLogin")}
-              </Button>
-            </form>
-          )}
         </div>
+        {unavailable ? (
+          <div className="flex flex-col gap-4">
+            {Boolean(error) && <p className="text-center text-sm text-destructive">{localizedError(error, t)}</p>}
+            <Button type="button" className="w-full" onClick={() => window.location.reload()}>
+              {t("common.retry")}
+            </Button>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="password">{t("account.newPassword")}</Label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={t("auth.minPlaceholder")}
+                autoFocus
+                autoComplete="new-password"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="confirm">{t("auth.confirmPassword")}</Label>
+              <Input
+                id="confirm"
+                type="password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                placeholder={t("auth.reenterPassword")}
+                autoComplete="new-password"
+              />
+            </div>
+            {Boolean(error) && <p className="text-sm text-destructive">{localizedError(error, t)}</p>}
+            <Button type="submit" className="w-full" disabled={loading || !password || !confirm}>
+              {loading ? t("auth.saving") : t("auth.setupAndLogin")}
+            </Button>
+          </form>
+        )}
       </div>
     </div>
   );
