@@ -87,6 +87,7 @@ export default function SystemSettingsPage() {
   const [proxyPoolInterval, setProxyPoolInterval] = React.useState("30");
   const [proxyPoolFailure, setProxyPoolFailure] = React.useState(false);
   const [proxyPoolStrategy, setProxyPoolStrategy] = React.useState<"sequential" | "random">("sequential");
+  const [savingProxyStrategy, setSavingProxyStrategy] = React.useState(false);
   const [proxyPoolThreshold, setProxyPoolThreshold] = React.useState("3");
   const [proxyPoolCooldown, setProxyPoolCooldown] = React.useState("60");
   const [proxyPoolHealthInterval, setProxyPoolHealthInterval] = React.useState("30");
@@ -95,6 +96,7 @@ export default function SystemSettingsPage() {
   >([]);
   const [proxyReconnectMax, setProxyReconnectMax] = React.useState("5");
   const [proxyReconnectInterval, setProxyReconnectInterval] = React.useState("30");
+  const [savingProxyReconnect, setSavingProxyReconnect] = React.useState(false);
   const [savingEgressVisibility, setSavingEgressVisibility] = React.useState(false);
   // 出口探测：测一次真实请求，拿到"直连 / 经全局代理"两条出口 IP。
   const [egressTesting, setEgressTesting] = React.useState(false);
@@ -636,15 +638,16 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => toast.error(t("settings.importFailedPrefix") + localizedError(e, t)));
   };
-  const saveProxyPoolStrategy = () => {
-    if (!ensureSettingsLoaded()) return;
+  const saveProxyPoolStrategy = async () => {
+    if (!ensureSettingsLoaded() || savingProxyStrategy) return;
     const interval = Number(proxyPoolInterval);
     if (!Number.isFinite(interval) || !Number.isInteger(interval) || interval < 3) {
       toast.error(t("settings.invalidRotationInterval"));
       return;
     }
-    api
-      .setSettings({
+    setSavingProxyStrategy(true);
+    try {
+      const s = await api.setSettings({
         proxy_rotate_timed_enabled: proxyPoolTimed,
         proxy_rotate_interval_seconds: Number(proxyPoolInterval),
         proxy_rotate_on_failure: proxyPoolFailure,
@@ -652,12 +655,14 @@ export default function SystemSettingsPage() {
         proxy_health_fail_threshold: Number(proxyPoolThreshold),
         proxy_health_cooldown_seconds: Number(proxyPoolCooldown),
         proxy_health_check_interval_seconds: Number(proxyPoolHealthInterval),
-      })
-      .then((s) => {
-        applySaved(s);
-        toast.success(t("settings.rotationSaved"));
-      })
-      .catch((e) => toast.error(t("settings.saveFailedPrefix") + localizedError(e, t)));
+      });
+      applySaved(s);
+      toast.success(t("settings.rotationSaved"));
+    } catch (e) {
+      toast.error(t("settings.saveFailedPrefix") + localizedError(e, t));
+    } finally {
+      setSavingProxyStrategy(false);
+    }
   };
   const testAllProxyPool = () =>
     api
@@ -698,18 +703,21 @@ export default function SystemSettingsPage() {
       .catch((e) => toast.error(t("settings.deleteFailedPrefix") + localizedError(e, t)));
   };
 
-  const saveProxyReconnect = () => {
-    if (!ensureSettingsLoaded()) return;
-    api
-      .setSettings({
+  const saveProxyReconnect = async () => {
+    if (!ensureSettingsLoaded() || savingProxyReconnect) return;
+    setSavingProxyReconnect(true);
+    try {
+      const s = await api.setSettings({
         proxy_reconnect_max_attempts: Number(proxyReconnectMax),
         proxy_reconnect_interval_seconds: Number(proxyReconnectInterval),
-      })
-      .then((s) => {
-        applySaved(s);
-        toast.success(t("settings.reconnectSaved"));
-      })
-      .catch((e) => toast.error(t("settings.saveFailedPrefix") + localizedError(e, t)));
+      });
+      applySaved(s);
+      toast.success(t("settings.reconnectSaved"));
+    } catch (e) {
+      toast.error(t("settings.saveFailedPrefix") + localizedError(e, t));
+    } finally {
+      setSavingProxyReconnect(false);
+    }
   };
 
   const saveEgressProbeUrl = async () => {
@@ -1150,10 +1158,10 @@ export default function SystemSettingsPage() {
                         type="button"
                         variant="outline"
                         className="w-full sm:w-auto"
-                        onClick={saveProxyReconnect}
-                        disabled={!loaded || !settingsLoaded}
+                        onClick={() => void saveProxyReconnect()}
+                        disabled={!loaded || !settingsLoaded || savingProxyReconnect}
                       >
-                        {t("settings.savePolicy")}
+                        {savingProxyReconnect ? t("settings.saving") : t("settings.savePolicy")}
                       </Button>
                     </div>
                   </div>
@@ -1493,10 +1501,10 @@ export default function SystemSettingsPage() {
                           type="button"
                           variant="outline"
                           className="w-full sm:w-auto"
-                          onClick={saveProxyPoolStrategy}
-                          disabled={!loaded || !settingsLoaded}
+                          onClick={() => void saveProxyPoolStrategy()}
+                          disabled={!loaded || !settingsLoaded || savingProxyStrategy}
                         >
-                          {t("settings.saveRotation")}
+                          {savingProxyStrategy ? t("settings.saving") : t("settings.saveRotation")}
                         </Button>
                       </div>
                     </div>
