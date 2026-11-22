@@ -82,6 +82,7 @@ export function PacketCodeEditor({
   const onChangeRef = React.useRef(onChange);
   onChangeRef.current = onChange;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: value only seeds the document; edits flow through updateListener.
   React.useEffect(() => {
     if (!host.current) return;
     const state = EditorState.create({

@@ -169,7 +169,7 @@ export default function LLMRecordsPage() {
       .then((s) => {
         if (alive) setRecEnabled(!!s.llm_record);
       })
-      .catch(() => {});
+      .catch(() => undefined);
     return () => {
       alive = false;
     };
@@ -195,11 +195,13 @@ export default function LLMRecordsPage() {
   }, [session]);
 
   // Reset page on filter change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filters are triggers, not values read by the effect.
   React.useEffect(() => {
     setPage(0);
   }, [sessionQ, model, size, pickedTask]);
 
   // Load list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick is a manual refetch signal.
   React.useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -216,14 +218,14 @@ export default function LLMRecordsPage() {
         setRecords(r.records ?? []);
         setTotal(r.total ?? 0);
       })
-      .catch(() => {})
+      .catch(() => undefined)
       .finally(() => alive && setLoading(false));
     api
       .llmTasks()
       .then((r) => {
         if (alive) setTasks(r.tasks ?? []);
       })
-      .catch(() => {});
+      .catch(() => undefined);
     return () => {
       alive = false;
     };
@@ -242,7 +244,7 @@ export default function LLMRecordsPage() {
         setPage(0);
         setReloadTick((t) => t + 1);
       })
-      .catch(() => {})
+      .catch(() => undefined)
       .finally(() => setDeleting(false));
   };
 
@@ -260,7 +262,7 @@ export default function LLMRecordsPage() {
       .then((d) => {
         if (alive) setDetail(d);
       })
-      .catch(() => {})
+      .catch(() => undefined)
       .finally(() => {
         if (alive) setDetailLoading(false);
       });

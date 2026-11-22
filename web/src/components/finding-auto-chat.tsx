@@ -102,7 +102,17 @@ export function FindingAutoChat({
       return;
     }
     void createConversation();
-  }, [conversation, createConversation, initialConversationId, manualEmpty, open, safeTitle, storageKey]);
+  }, [
+    agentKey,
+    conversation,
+    createConversation,
+    findingId,
+    initialConversationId,
+    manualEmpty,
+    open,
+    safeTitle,
+    storageKey,
+  ]);
 
   React.useEffect(() => {
     if (!historyOpen && !running) return;

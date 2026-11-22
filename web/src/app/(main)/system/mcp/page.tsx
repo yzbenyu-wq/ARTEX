@@ -58,19 +58,19 @@ export default function MCPPage() {
     api
       .agents()
       .then(setAgents)
-      .catch(() => {});
+      .catch(() => undefined);
     api
       .mcpServers()
       .then((ss) => {
         setServers(ss);
-        ss.forEach((s) =>
+        ss.forEach((s) => {
           api
             .resourceVisibility("mcp", s.id)
             .then((ids) => setVisibility((v) => ({ ...v, [s.id]: ids })))
-            .catch(() => {}),
-        );
+            .catch(() => undefined);
+        });
       })
-      .catch(() => {});
+      .catch(() => undefined);
   }, []);
   React.useEffect(() => {
     load();
@@ -120,7 +120,7 @@ export default function MCPPage() {
     });
     setTab("config");
     setOpen(true);
-    loadTools(s.id);
+    void loadTools(s.id);
   }
 
   async function loadTools(id: number) {
@@ -304,10 +304,14 @@ export default function MCPPage() {
               value={form.url}
               onChange={(e) => setF({ url: e.target.value })}
             />
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox checked={form.insecure} onCheckedChange={(v) => setF({ insecure: v === true })} />
+            <div className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={form.insecure}
+                aria-label={ui("screen.5938afb19912b5")}
+                onCheckedChange={(v) => setF({ insecure: v === true })}
+              />
               {ui("screen.5938afb19912b5")}
-            </label>
+            </div>
           </div>
         )}
         <div className="grid gap-2">
@@ -377,7 +381,10 @@ export default function MCPPage() {
         {servers.map((s) => (
           <Card
             key={s.id}
-            onClick={() => openEdit(s)}
+            onClick={(e) => {
+              if ((e.target as HTMLElement).closest("[data-card-action]")) return;
+              openEdit(s);
+            }}
             className="hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm"
           >
             <CardHeader>
@@ -387,7 +394,7 @@ export default function MCPPage() {
                 <Badge variant="outline" className="uppercase">
                   {s.transport}
                 </Badge>
-                <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                <div className="ml-auto flex items-center gap-2" data-card-action="">
                   <Switch
                     checked={s.enabled}
                     onCheckedChange={() => toggleEnabled(s)}
@@ -410,17 +417,18 @@ export default function MCPPage() {
                   ? ui("screen.0092721f98c2ec", { v0: s.tools.length })
                   : ui("screen.46c990b44f62f8")}
               </p>
-              <div className="grid gap-2" onClick={(e) => e.stopPropagation()}>
+              <div className="grid gap-2" data-card-action="">
                 <span className="text-muted-foreground text-xs">{ui("screen.6d6c9bd4c4498a")}</span>
                 <div className="flex flex-wrap gap-x-4 gap-y-2">
                   {agents.map((a) => (
-                    <label key={a.key} className="flex items-center gap-2 text-sm">
+                    <div key={a.key} className="flex items-center gap-2 text-sm">
                       <Checkbox
                         checked={(visibility[s.id] ?? []).includes(a.id)}
+                        aria-label={a.name}
                         onCheckedChange={() => toggleVisibility(s.id, a.id, a.name)}
                       />
                       {a.name}
-                    </label>
+                    </div>
                   ))}
                 </div>
               </div>

@@ -259,6 +259,12 @@ function trunc(s: string, n = 26): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+// 文案回退要跳过空串（后端常给 "" 而不是缺字段），所以不能用 ??。
+function firstNonEmpty(...values: (string | null | undefined)[]): string {
+  for (const v of values) if (v) return v;
+  return "";
+}
+
 // 图里的节点文案：服务不显示完整 URL，只显示 端口·标题·状态码；端点只显示 path。
 // 其余类型沿用后端给的 label。
 function graphLabel(n: CoverageGraphNode, viewMode: CoverageViewMode = "asset", ui: UITranslate): string {
@@ -271,23 +277,23 @@ function graphLabel(n: CoverageGraphNode, viewMode: CoverageViewMode = "asset", 
           /* 非法 URL：回退到资产标签 */
         }
       }
-      return n.label || n.domain || n.ip || ui("screen.52fff1680de153");
+      return firstNonEmpty(n.label, n.domain, n.ip, ui("screen.52fff1680de153"));
     }
     if (n.kind === "service") {
       const engine = databaseEngine(n);
-      const host = n.domain || n.ip || n.label;
+      const host = firstNonEmpty(n.domain, n.ip, n.label);
       return engine
         ? `${engine.toUpperCase()} · ${host}${n.port ? `:${n.port}` : ""}`
         : `${host}${n.port ? `:${n.port}` : ""}`;
     }
-    return n.label || n.domain || n.ip || n.app_name || kindMeta(ui)[n.kind].label;
+    return firstNonEmpty(n.label, n.domain, n.ip, n.app_name, kindMeta(ui)[n.kind].label);
   }
   if (n.kind === "service") {
     const parts: string[] = [];
     if (n.port) parts.push(`:${n.port}`);
     if (n.page_title) parts.push(n.page_title);
     if (n.status_code) parts.push(String(n.status_code));
-    return parts.length ? parts.join(" · ") : n.domain || n.ip || n.label;
+    return parts.length ? parts.join(" · ") : firstNonEmpty(n.domain, n.ip, n.label);
   }
   if (n.kind === "endpoint" && n.url) {
     try {
@@ -360,21 +366,21 @@ function toG6Nodes(
       // Two generous columns keep long host names readable. A single column is
       // used for short groups so the parent/child relationship remains obvious.
       if (items.length <= 8) {
-        items.forEach((rn, index) =>
+        items.forEach((rn, index) => {
           positions.set(rn.key, {
             x: (zoneBounds[zone][0] + zoneBounds[zone][1]) / 2,
             y: 90 + ((index + 1) * (virtualHeight - 150)) / (items.length + 1),
-          }),
-        );
+          });
+        });
       } else {
         const columns = [zoneBounds[zone][0] + 105, zoneBounds[zone][1] - 105];
         const rows = Math.ceil(items.length / 2);
-        items.forEach((rn, index) =>
+        items.forEach((rn, index) => {
           positions.set(rn.key, {
             x: columns[index % 2],
             y: 90 + ((Math.floor(index / 2) + 1) * (virtualHeight - 150)) / (rows + 1),
-          }),
-        );
+          });
+        });
       }
     }
   } else {
@@ -840,7 +846,7 @@ function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; covera
     [data, expanded, viewMode],
   );
 
-  const displayNodes = React.useMemo(() => renderNodes, [renderNodes, viewMode]);
+  const displayNodes = renderNodes;
   const displayNodeKeys = React.useMemo(() => new Set(displayNodes.map((node) => node.key)), [displayNodes]);
   const displayEdges = React.useMemo(
     () => renderEdges.filter((edge) => displayNodeKeys.has(edge.src) && displayNodeKeys.has(edge.dst)),

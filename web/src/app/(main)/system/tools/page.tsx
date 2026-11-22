@@ -313,15 +313,16 @@ function ToolEditor({
             <Label className="text-muted-foreground text-xs">{ui("screen.d2a8ed3e865d05")}</Label>
             <div className="flex flex-wrap gap-3">
               {agents.map((ag) => (
-                <label key={ag.key} className="flex items-center gap-2 text-sm">
+                <div key={ag.key} className="flex items-center gap-2 text-sm">
                   <Checkbox
                     checked={bound.includes(ag.key)}
                     disabled={trafficGated}
+                    aria-label={`${ag.name} (${ag.key})`}
                     onCheckedChange={() => toggleAgent(ag.key)}
                   />
                   {ag.name}
                   <span className="text-muted-foreground font-mono text-xs">{ag.key}</span>
-                </label>
+                </div>
               ))}
               {agents.length === 0 && (
                 <span className="text-muted-foreground text-xs">{ui("screen.6d026ee6e4dfc7")}</span>
@@ -545,11 +546,11 @@ export default function ToolsPage() {
     api
       .agents()
       .then(setAgents)
-      .catch(() => {});
+      .catch(() => undefined);
     api
       .settings()
       .then((s) => setCaptureOn(!!s.traffic_capture))
-      .catch(() => {});
+      .catch(() => undefined);
   }, [reload]);
 
   const [query, setQuery] = React.useState("");
@@ -1207,13 +1208,14 @@ function CustomToolDialog({
                     onChange={(e) => setEx({ ...ex, proxy: e.target.value })}
                   />
                 </div>
-                <label className="mt-4 flex items-center gap-2 text-sm">
+                <div className="mt-4 flex items-center gap-2 text-sm">
                   <Checkbox
                     checked={ex.use_recording_proxy}
+                    aria-label={ui("screen.5bd60af132eb13")}
                     onCheckedChange={(v) => setEx({ ...ex, use_recording_proxy: !!v })}
                   />
                   {ui("screen.5bd60af132eb13")}
-                </label>
+                </div>
               </div>
             </div>
           )}
@@ -1290,23 +1292,29 @@ function CustomToolDialog({
             <Label className="text-muted-foreground text-xs">{ui("screen.7bb739274d9847")}</Label>
             <div className="flex flex-wrap gap-3">
               {agents.map((a) => (
-                <label key={a.key} className="flex items-center gap-2 text-sm">
-                  <Checkbox checked={bound.includes(a.key)} onCheckedChange={() => toggleAgent(a.key)} />
+                <div key={a.key} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={bound.includes(a.key)}
+                    aria-label={`${a.name} (${a.key})`}
+                    onCheckedChange={() => toggleAgent(a.key)}
+                  />
                   {a.name}
                   <span className="text-muted-foreground font-mono text-xs">{a.key}</span>
-                </label>
+                </div>
               ))}
             </div>
           </div>
 
           <div className="flex items-center gap-6">
-            <label className="flex items-center gap-2 text-sm">
-              <Switch checked={enabled} onCheckedChange={setEnabled} /> {ui("screen.f4f0ead1116b5b")}
-            </label>
+            <div className="flex items-center gap-2 text-sm">
+              <Switch checked={enabled} aria-label={ui("screen.f4f0ead1116b5b")} onCheckedChange={setEnabled} />{" "}
+              {ui("screen.f4f0ead1116b5b")}
+            </div>
             {kind !== "shell" && (
-              <label className="flex items-center gap-2 text-sm">
-                <Switch checked={deferred} onCheckedChange={setDeferred} /> {ui("screen.73edf6b3638e54")}
-              </label>
+              <div className="flex items-center gap-2 text-sm">
+                <Switch checked={deferred} aria-label={ui("screen.73edf6b3638e54")} onCheckedChange={setDeferred} />{" "}
+                {ui("screen.73edf6b3638e54")}
+              </div>
             )}
           </div>
 
@@ -1422,7 +1430,7 @@ function PresetPicker({
             <p className="text-muted-foreground py-6 text-center text-sm">{ui("screen.toolboxPresetNone")}</p>
           ) : (
             presets.map((p) => (
-              <label
+              <div
                 key={p.key}
                 className={
                   "flex items-start gap-2 rounded-md border p-3 text-sm " +
@@ -1433,6 +1441,7 @@ function PresetPicker({
                   className="mt-0.5"
                   checked={p.installed || selected.includes(p.key)}
                   disabled={p.installed}
+                  aria-label={p.key}
                   onCheckedChange={() => toggle(p.key)}
                 />
                 <span className="flex min-w-0 flex-1 flex-col gap-1">
@@ -1461,7 +1470,7 @@ function PresetPicker({
                   </span>
                   <span className="text-muted-foreground text-xs">{p.description}</span>
                 </span>
-              </label>
+              </div>
             ))
           )}
         </div>

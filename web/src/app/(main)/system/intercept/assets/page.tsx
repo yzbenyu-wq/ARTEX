@@ -146,7 +146,7 @@ export default function AssetInterceptPage() {
   }, [liveUI]);
 
   React.useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   function set(patch: Partial<RuleForm>) {
@@ -182,7 +182,7 @@ export default function AssetInterceptPage() {
         toast.success(ui("screen.f89afbf2a0241b"));
       }
       setOpen(false);
-      load();
+      void load();
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -195,7 +195,7 @@ export default function AssetInterceptPage() {
     try {
       await api.deleteAssetInterceptRule(rule.id);
       toast.success(ui("screen.04e366e339819a"));
-      load();
+      void load();
     } catch (e) {
       toast.error((e as Error).message);
     }
@@ -204,7 +204,7 @@ export default function AssetInterceptPage() {
   async function handleToggle(rule: AssetInterceptRule) {
     try {
       await api.toggleAssetInterceptRule(rule.id, !rule.enabled);
-      load();
+      void load();
     } catch (e) {
       toast.error((e as Error).message);
     }

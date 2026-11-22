@@ -364,27 +364,27 @@ export default function SkillsPage() {
     api
       .agents()
       .then(setAgents)
-      .catch(() => {});
+      .catch(() => undefined);
     api
       .mcpServers()
       .then(setMcpOptions)
-      .catch(() => {});
+      .catch(() => undefined);
     api
       .missingSkills()
       .then(setMissing)
-      .catch(() => {});
+      .catch(() => undefined);
     api
       .skills()
       .then((ss) => {
         setSkills(ss);
-        ss.forEach((s) =>
+        ss.forEach((s) => {
           api
             .skillVisibility(s.name)
             .then((ids) => setVisibility((v) => ({ ...v, [s.name]: ids })))
-            .catch(() => {}),
-        );
+            .catch(() => undefined);
+        });
       })
-      .catch(() => {});
+      .catch(() => undefined);
   }, []);
 
   React.useEffect(() => {
@@ -416,7 +416,7 @@ export default function SkillsPage() {
   function onUploadPick(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     e.target.value = ""; // reset so picking the same file again re-fires
-    if (f) uploadZip(f);
+    if (f) void uploadZip(f);
   }
 
   React.useEffect(() => {
@@ -705,9 +705,18 @@ export default function SkillsPage() {
         return (
           <div key={node.path}>
             <div
+              role="treeitem"
+              aria-expanded={open}
+              tabIndex={0}
               className="group relative flex cursor-pointer select-none items-center gap-1 rounded py-0.5 pr-1 text-sm hover:bg-muted"
               style={{ paddingLeft: baseIndent }}
               onClick={() => toggleExpanded(key)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggleExpanded(key);
+                }
+              }}
             >
               <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
               {open ? (
@@ -760,7 +769,8 @@ export default function SkillsPage() {
             </div>
             {open && (
               <>
-                {renderTree(node.children, skill, depth + 1)}
+                {/* biome-ignore lint/a11y/useSemanticElements: ARIA tree subgroups have no semantic HTML equivalent. */}
+                <div role="group">{renderTree(node.children, skill, depth + 1)}</div>
                 {creating?.skill === skill && creating.inDir === node.path && inlineInputJSX(baseIndent + 14)}
               </>
             )}
@@ -773,12 +783,21 @@ export default function SkillsPage() {
       return (
         <div
           key={node.path}
+          role="treeitem"
+          aria-selected={isSelected}
+          tabIndex={0}
           className={cn(
             "group relative flex cursor-pointer select-none items-center gap-1 rounded py-0.5 pr-1 text-sm",
             isSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
           )}
           style={{ paddingLeft: baseIndent + 16 }}
           onClick={() => setSelected({ skill, path: node.path })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setSelected({ skill, path: node.path });
+            }
+          }}
         >
           <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate font-mono text-xs" title={node.path}>
@@ -876,7 +895,7 @@ export default function SkillsPage() {
               content — force it to block so long names truncate instead of
               widening the rows past the sidebar. */}
           <ScrollArea className="flex-1 [&>[data-slot=scroll-area-viewport]>div]:!block">
-            <div className="p-1">
+            <div role="tree" className="p-1">
               {skills.map((s) => {
                 const isOpen = expanded.has(s.name);
                 const tree = buildTree(s.files);
@@ -885,6 +904,10 @@ export default function SkillsPage() {
                   <div key={s.name}>
                     {/* skill 根节点 */}
                     <div
+                      role="treeitem"
+                      aria-expanded={isOpen}
+                      aria-selected={isSkillSelected}
+                      tabIndex={0}
                       className={cn(
                         "group relative flex cursor-pointer select-none items-center gap-1 rounded px-2 py-1 text-sm",
                         isSkillSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
@@ -892,6 +915,13 @@ export default function SkillsPage() {
                       onClick={() => {
                         toggleExpanded(s.name);
                         setSelected({ skill: s.name, path: null });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          toggleExpanded(s.name);
+                          setSelected({ skill: s.name, path: null });
+                        }
                       }}
                     >
                       <ChevronRightIcon
@@ -961,7 +991,8 @@ export default function SkillsPage() {
                     {/* 展开：递归文件树 */}
                     {isOpen && (
                       <>
-                        {renderTree(tree, s.name, 0)}
+                        {/* biome-ignore lint/a11y/useSemanticElements: ARIA tree subgroups have no semantic HTML equivalent. */}
+                        <div role="group">{renderTree(tree, s.name, 0)}</div>
                         {creating?.skill === s.name && creating.inDir === "" && inlineInputJSX(22)}
                       </>
                     )}
@@ -1086,13 +1117,14 @@ export default function SkillsPage() {
                     ) : (
                       <div className="flex flex-wrap gap-x-4 gap-y-2">
                         {mcpOptions.map((m) => (
-                          <label key={m.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                          <div key={m.id} className="flex cursor-pointer items-center gap-2 text-sm">
                             <Checkbox
                               checked={detailMcps.includes(m.name)}
+                              aria-label={m.name}
                               onCheckedChange={(on) => toggleSkillMcp(selectedSkill.name, m.name, !!on)}
                             />
                             {m.name}
-                          </label>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -1102,13 +1134,14 @@ export default function SkillsPage() {
                     <Label className="text-xs text-muted-foreground">{ui("screen.6d6c9bd4c4498a")}</Label>
                     <div className="space-y-2">
                       {agents.map((a) => (
-                        <label key={a.key} className="flex cursor-pointer items-center gap-2 text-sm">
+                        <div key={a.key} className="flex cursor-pointer items-center gap-2 text-sm">
                           <Checkbox
                             checked={(visibility[selectedSkill.name] ?? []).includes(a.id)}
+                            aria-label={a.name}
                             onCheckedChange={() => toggleVisibility(selectedSkill.name, a.id, a.name)}
                           />
                           {a.name}
-                        </label>
+                        </div>
                       ))}
                       {agents.length === 0 && (
                         <span className="text-xs text-muted-foreground">{ui("screen.1ece46293a50b7")}</span>
@@ -1284,15 +1317,16 @@ export default function SkillsPage() {
               ) : (
                 <div className="flex flex-col gap-2">
                   {mcpOptions.map((m) => (
-                    <label key={m.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                    <div key={m.id} className="flex cursor-pointer items-center gap-2 text-sm">
                       <Checkbox
                         checked={newMcps.includes(m.name)}
+                        aria-label={m.name}
                         onCheckedChange={(on) =>
                           setNewMcps((cur) => (on ? [...cur, m.name] : cur.filter((n) => n !== m.name)))
                         }
                       />
                       {m.name}
-                    </label>
+                    </div>
                   ))}
                 </div>
               )}
@@ -1306,15 +1340,16 @@ export default function SkillsPage() {
               ) : (
                 <div className="flex flex-col gap-2">
                   {agents.map((a) => (
-                    <label key={a.key} className="flex cursor-pointer items-center gap-2 text-sm">
+                    <div key={a.key} className="flex cursor-pointer items-center gap-2 text-sm">
                       <Checkbox
                         checked={newVisibility.includes(a.id)}
+                        aria-label={a.name}
                         onCheckedChange={(on) =>
                           setNewVisibility((cur) => (on ? [...cur, a.id] : cur.filter((id) => id !== a.id)))
                         }
                       />
                       {a.name}
-                    </label>
+                    </div>
                   ))}
                 </div>
               )}

@@ -95,19 +95,19 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
     api
       .mcpServers()
       .then(setMcp)
-      .catch(() => {});
+      .catch(() => undefined);
     api
       .skills()
       .then(setSkills)
-      .catch(() => {});
+      .catch(() => undefined);
     api
       .tools()
       .then(setTools)
-      .catch(() => {});
+      .catch(() => undefined);
     api
       .settings()
       .then(setSettings)
-      .catch(() => {});
+      .catch(() => undefined);
   }, []);
   // global gates: traffic tools need 流量捕获, web search needs the master switch.
   const captureOn = !!settings?.traffic_capture;
@@ -250,7 +250,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   function toggleMcp(id: number) {
     const on = mcpVisible.includes(id);
     const name = mcp.find((m) => m.id === id)?.name ?? String(id);
-    applyVis(
+    void applyVis(
       on ? mcpVisible.filter((x) => x !== id) : [...mcpVisible, id],
       skillVisible,
       ui("screen.7565ef56c2f69d", { v0: on ? ui("screen.a37778f17c5f3e") : ui("screen.8a4ef3e48e4e8a"), v1: name }),
@@ -258,7 +258,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   }
   function toggleSkill(name: string) {
     const on = skillVisible.includes(name);
-    applyVis(
+    void applyVis(
       mcpVisible,
       on ? skillVisible.filter((x) => x !== name) : [...skillVisible, name],
       ui("screen.cc0c3bb9161a01", { v0: on ? ui("screen.a37778f17c5f3e") : ui("screen.8a4ef3e48e4e8a"), v1: name }),
@@ -286,7 +286,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       api
         .tools()
         .then(setTools)
-        .catch(() => {});
+        .catch(() => undefined);
     }
   }
 
@@ -758,11 +758,15 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         <p className="text-muted-foreground mb-3 text-xs">{ui("screen.7864345492d30e")}</p>
         <div className="grid gap-2">
           {mcp.map((m) => (
-            <label key={m.id} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-              <Checkbox checked={mcpVisible.includes(m.id)} onCheckedChange={() => toggleMcp(m.id)} />
+            <div key={m.id} className="flex items-center gap-2 rounded-md border p-2 text-sm">
+              <Checkbox
+                checked={mcpVisible.includes(m.id)}
+                aria-label={m.name}
+                onCheckedChange={() => toggleMcp(m.id)}
+              />
               {m.name}
               <span className="text-muted-foreground ml-auto text-xs">{m.transport}</span>
-            </label>
+            </div>
           ))}
           {mcp.length === 0 && <span className="text-muted-foreground text-xs">{ui("screen.557da918b0c6c2")}</span>}
         </div>
@@ -773,11 +777,15 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         <p className="text-muted-foreground mb-3 text-xs">{ui("screen.33962f5058dca4")}</p>
         <div className="grid gap-2">
           {skills.map((s) => (
-            <label key={s.name} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-              <Checkbox checked={skillVisible.includes(s.name)} onCheckedChange={() => toggleSkill(s.name)} />
+            <div key={s.name} className="flex items-center gap-2 rounded-md border p-2 text-sm">
+              <Checkbox
+                checked={skillVisible.includes(s.name)}
+                aria-label={s.name}
+                onCheckedChange={() => toggleSkill(s.name)}
+              />
               <span className="font-mono text-xs">{s.name}</span>
               {s.description && <span className="text-muted-foreground ml-auto truncate text-xs">{s.description}</span>}
-            </label>
+            </div>
           ))}
           {skills.length === 0 && <span className="text-muted-foreground text-xs">{ui("screen.1efb2d12bb2b08")}</span>}
         </div>
@@ -791,13 +799,14 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
             const isTraffic = TRAFFIC_TOOL_KEYS.has(t.key);
             const gated = isTraffic && !captureOn; // traffic tools need 流量捕获 on
             return (
-              <label
+              <div
                 key={t.key}
                 className={cn("flex items-center gap-2 rounded-md border p-2 text-sm", gated && "opacity-60")}
               >
                 <Checkbox
                   checked={t.agents.includes(agentKey)}
                   disabled={gated}
+                  aria-label={t.key}
                   onCheckedChange={() => toggleTool(t)}
                 />
                 <span className="font-mono text-xs">{t.key}</span>
@@ -820,7 +829,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                     </span>
                   )
                 )}
-              </label>
+              </div>
             );
           })}
           {tools.length === 0 && <span className="text-muted-foreground text-xs">{ui("screen.40d31af70c9bec")}</span>}
@@ -1105,7 +1114,7 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
               onValueChange={(v) => {
                 const rm = v as "serial" | "parallel";
                 setRunMode(rm);
-                saveBehavior({ trigger_run_mode: rm });
+                void saveBehavior({ trigger_run_mode: rm });
               }}
             >
               <SelectTrigger size="sm" className="h-8 w-40">
@@ -1126,7 +1135,7 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
               onValueChange={(v) => {
                 const mm = v as "by_task" | "all" | "none";
                 setMergeMode(mm);
-                saveBehavior({ trigger_merge_mode: mm });
+                void saveBehavior({ trigger_merge_mode: mm });
               }}
             >
               <SelectTrigger size="sm" className="h-8 w-44">
@@ -1155,7 +1164,7 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
                 onBlur={() => {
                   const n = Math.max(0, Math.floor(Number(maxParallel) || 0));
                   setMaxParallel(String(n));
-                  saveBehavior({ trigger_max_parallel: n });
+                  void saveBehavior({ trigger_max_parallel: n });
                 }}
               />
             </div>
@@ -1180,9 +1189,14 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 定时 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onInterval} onCheckedChange={(v) => setOnInterval(!!v)} /> {ui("screen.a9123c249da1bf")}
-          </label>
+          <div className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={onInterval}
+              aria-label={ui("screen.a9123c249da1bf")}
+              onCheckedChange={(v) => setOnInterval(!!v)}
+            />{" "}
+            {ui("screen.a9123c249da1bf")}
+          </div>
           {onInterval && (
             <div className="grid gap-1.5">
               <div className="flex items-center gap-2">
@@ -1212,9 +1226,14 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* finding */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onFinding} onCheckedChange={(v) => setOnFinding(!!v)} /> {ui("screen.483c0ba80ec811")}
-          </label>
+          <div className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={onFinding}
+              aria-label={ui("screen.483c0ba80ec811")}
+              onCheckedChange={(v) => setOnFinding(!!v)}
+            />{" "}
+            {ui("screen.483c0ba80ec811")}
+          </div>
           {onFinding && (
             <Textarea
               className="text-xs"
@@ -1228,9 +1247,14 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 目标达成 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onGoalMet} onCheckedChange={(v) => setOnGoalMet(!!v)} /> {ui("screen.cd00f0117d8f01")}
-          </label>
+          <div className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={onGoalMet}
+              aria-label={ui("screen.cd00f0117d8f01")}
+              onCheckedChange={(v) => setOnGoalMet(!!v)}
+            />{" "}
+            {ui("screen.cd00f0117d8f01")}
+          </div>
           {onGoalMet && (
             <Textarea
               className="text-xs"
@@ -1244,10 +1268,14 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 任务超时 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onTaskTimeout} onCheckedChange={(v) => setOnTaskTimeout(!!v)} />{" "}
+          <div className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={onTaskTimeout}
+              aria-label={ui("screen.a53ce694d6175c")}
+              onCheckedChange={(v) => setOnTaskTimeout(!!v)}
+            />{" "}
             {ui("screen.a53ce694d6175c")}
-          </label>
+          </div>
           {onTaskTimeout && (
             <Textarea
               className="text-xs"
@@ -1261,9 +1289,14 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 工具调用 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onToolCall} onCheckedChange={(v) => setOnToolCall(!!v)} /> {ui("screen.69e74dc7a10877")}
-          </label>
+          <div className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={onToolCall}
+              aria-label={ui("screen.69e74dc7a10877")}
+              onCheckedChange={(v) => setOnToolCall(!!v)}
+            />{" "}
+            {ui("screen.69e74dc7a10877")}
+          </div>
           {onToolCall && (
             <div className="grid gap-1.5">
               <div className="text-muted-foreground text-xs">
@@ -1278,10 +1311,11 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
                 )}
                 <div className="grid gap-1">
                   {tools.map((tool) => (
-                    <label key={tool.key} className="flex items-start gap-2 text-xs">
+                    <div key={tool.key} className="flex items-start gap-2 text-xs">
                       <Checkbox
                         className="mt-0.5"
                         checked={toolNames.includes(tool.key)}
+                        aria-label={tool.key}
                         onCheckedChange={() => toggleTool(tool.key)}
                       />
                       <span className="min-w-0">
@@ -1290,7 +1324,7 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
                           <span className="text-muted-foreground line-clamp-1"> {tool.description}</span>
                         )}
                       </span>
-                    </label>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -1307,10 +1341,14 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 任务创建 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onTaskCreate} onCheckedChange={(v) => setOnTaskCreate(!!v)} />{" "}
+          <div className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={onTaskCreate}
+              aria-label={ui("screen.6e26aa6e87b776")}
+              onCheckedChange={(v) => setOnTaskCreate(!!v)}
+            />{" "}
             {ui("screen.6e26aa6e87b776")}
-          </label>
+          </div>
           {onTaskCreate && (
             <Textarea
               className="text-xs"
