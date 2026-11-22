@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -16,6 +17,7 @@ import (
 type LogLine struct {
 	Seq   int64  `json:"seq"`
 	DBID  int64  `json:"db_id,omitempty"` // server_logs.id; 0 for pre-persistence entries
+	Epoch string `json:"epoch,omitempty"` // per-process id; lets clients detect a restart (Seq restarts at 1)
 	TS    string `json:"ts"`
 	Level string `json:"level"` // info | warn | error
 	Tag   string `json:"tag"`   // the leading [tag] (pg / planner / activity / …), if any
@@ -32,18 +34,27 @@ type dbWriteReq struct {
 // lines out to SSE subscribers, so the UI can show a live backend log stream.
 // It still passes everything through to stderr (the terminal keeps working).
 type logSinkT struct {
-	mu   sync.Mutex
-	ring []LogLine
-	cap  int
-	seq  int64
-	subs map[chan LogLine]struct{}
-	out  io.Writer // passthrough (stderr)
+	mu    sync.Mutex
+	ring  []LogLine
+	cap   int
+	seq   int64
+	epoch string // process-lifetime id stamped on every line
+	subs  map[chan LogLine]struct{}
+	out   io.Writer // passthrough (stderr)
 
 	dbOnce sync.Once
 	dbCh   chan dbWriteReq // buffered async channel; nil until SetDB is called
 }
 
-var logSink = &logSinkT{cap: 3000, subs: map[chan LogLine]struct{}{}, out: os.Stderr}
+var logSink = &logSinkT{cap: 3000, epoch: newLogEpoch(), subs: map[chan LogLine]struct{}{}, out: os.Stderr}
+
+// newLogEpoch identifies this process. Seq numbering restarts at 1 after a
+// restart while the browser keeps its old lines and dedups by Seq, so without
+// the epoch the client would drop every new line until Seq climbed past the old
+// maximum (the log view would look frozen after a deploy).
+func newLogEpoch() string {
+	return fmt.Sprintf("%x-%x", time.Now().UnixNano(), os.Getpid())
+}
 
 // StartLogCapture redirects the standard log package through the in-memory sink
 // (still writing to stderr). Call once at startup, as early as possible.
@@ -72,6 +83,7 @@ func (s *logSinkT) SetDB(ctx context.Context, pg *db.DB) {
 				restored = append(restored, LogLine{
 					Seq:   s.seq,
 					DBID:  l.ID,
+					Epoch: s.epoch,
 					TS:    l.CreatedAt.Format(time.RFC3339),
 					Level: l.Level,
 					Tag:   l.Tag,
@@ -131,14 +143,20 @@ func (s *logSinkT) add(l LogLine) {
 	s.mu.Lock()
 	s.seq++
 	l.Seq = s.seq
+	l.Epoch = s.epoch
 	s.ring = append(s.ring, l)
 	if len(s.ring) > s.cap {
 		s.ring = s.ring[len(s.ring)-s.cap:]
 	}
 	ch := s.dbCh
-	subs := make([]chan LogLine, 0, len(s.subs))
+	// Fan-out happens while holding mu, so a concurrent unsub (which also closes
+	// under mu) can never close a channel this loop is about to send on. Sends
+	// are non-blocking, so the lock is never held for long.
 	for sub := range s.subs {
-		subs = append(subs, sub)
+		select {
+		case sub <- l:
+		default:
+		}
 	}
 	s.mu.Unlock()
 
@@ -146,13 +164,6 @@ func (s *logSinkT) add(l LogLine) {
 	if ch != nil {
 		select {
 		case ch <- dbWriteReq{seq: l.Seq, ll: l}:
-		default:
-		}
-	}
-
-	for _, sub := range subs {
-		select {
-		case sub <- l:
 		default:
 		}
 	}
@@ -187,8 +198,8 @@ func (s *logSinkT) subscribe() (<-chan LogLine, func()) {
 		once.Do(func() {
 			s.mu.Lock()
 			delete(s.subs, ch)
+			close(ch) // safe: add only sends to s.subs while holding mu
 			s.mu.Unlock()
-			close(ch)
 		})
 	}
 }

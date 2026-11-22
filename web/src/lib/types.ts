@@ -825,6 +825,7 @@ export interface Conversation {
 export interface LogLine {
   seq: number;
   db_id?: number; // server_logs.id; present for DB-persisted lines
+  epoch?: string; // server process id; changes on restart, so seq numbering resets
   ts: string;
   level: "info" | "warn" | "error";
   tag: string;

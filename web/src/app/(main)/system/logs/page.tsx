@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useUITranslation } from "@/i18n/use-ui-translation";
 import { apiFetch, openSSE } from "@/lib/api";
+import { mergeOlder } from "@/lib/log-merge";
 import { MOCK } from "@/lib/mock/enabled";
 import type { LogLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -81,20 +82,16 @@ export default function LogsPage() {
   const [level, setLevel] = React.useState<"all" | LogLine["level"]>("all");
   const [paused, setPaused] = React.useState(false);
   const [loadingHistory, setLoadingHistory] = React.useState(false);
-  const [hasMore, setHasMore] = React.useState(false);
+  // 初始按"服务端可能还有更早日志"处理；MOCK 演示没有后端，不显示按钮。
+  const [hasMore, setHasMore] = React.useState(!MOCK);
   const bottom = React.useRef<HTMLDivElement>(null);
   const stick = React.useRef(true);
   const pausedRef = React.useRef(false);
   pausedRef.current = paused;
-
-  // Minimum db_id seen — used as the cursor for loading older history.
-  const minDbId = React.useMemo(() => {
-    let min = 0;
-    for (const l of lines) {
-      if (l.db_id && (min === 0 || l.db_id < min)) min = l.db_id;
-    }
-    return min;
-  }, [lines]);
+  // 服务端进程标识：重启后 seq 从 1 重数，发现 epoch 变化就整屏重置。
+  const bootRef = React.useRef("");
+  // 历史分页锚点：独立于渲染行，因为实时行永远没有 db_id。
+  const oldestDbIdRef = React.useRef(0);
 
   // Live tail via SSE. on connect, replays whatever is in the ring (includes
   // DB-restored history from the last 100 rows written before restart).
@@ -105,9 +102,20 @@ export default function LogsPage() {
     }
     const es = openSSE("/api/logs/stream?since=0");
     es.onmessage = (e) => {
-      if (pausedRef.current) return;
       try {
         const l = JSON.parse(e.data) as LogLine;
+        if (l.epoch && l.epoch !== bootRef.current) {
+          bootRef.current = l.epoch;
+          oldestDbIdRef.current = 0;
+          setHasMore(true);
+          setLines([l]);
+        }
+        // 重启恢复的历史行带 db_id，用它们把分页锚点钉在所有实时行之前；
+        // 暂停时也照样更新，否则恢复后锚点会落后并造成重复。
+        if (l.db_id && (oldestDbIdRef.current === 0 || l.db_id < oldestDbIdRef.current)) {
+          oldestDbIdRef.current = l.db_id;
+        }
+        if (pausedRef.current) return;
         setLines((prev) => (prev.some((x) => x.seq === l.seq) ? prev : [...prev, l].slice(-3000)));
       } catch {
         /* ignore malformed frame */
@@ -116,40 +124,27 @@ export default function LogsPage() {
     return () => es.close();
   }, []);
 
-  // Mark "has more" once we have any db_id in view.
-  React.useEffect(() => {
-    if (minDbId > 1) setHasMore(true);
-  }, [minDbId]);
-
   async function loadOlderHistory() {
     if (loadingHistory) return;
     setLoadingHistory(true);
     try {
-      const params = minDbId > 0 ? `?before=${minDbId}&limit=200` : `?limit=200`;
+      // 锚点来自历史接口自己返回的最小 db_id，而不是渲染行——实时行没有 db_id。
+      const before = oldestDbIdRef.current;
+      const params = before > 0 ? `?before=${before}&limit=200` : `?limit=200`;
       const res = await apiFetch(`/api/logs/history${params}`);
       if (!res.ok) return;
       const data = (await res.json()) as { items: LogLine[]; has_more: boolean };
-      if (data.items?.length) {
-        // Assign synthetic seq numbers below current minimum to keep dedup working.
-        setLines((prev) => {
-          const minSeq = prev.reduce((m, l) => Math.min(m, l.seq ?? 0), 0);
-          const older = data.items.map((l, i) => ({
-            ...l,
-            seq: minSeq - data.items.length + i,
-          }));
-          // Prepend, dedup by db_id, cap at 5000.
-          const merged = [...older, ...prev];
-          const seen = new Set<number>();
-          const deduped = merged.filter((l) => {
-            if (!l.db_id) return true;
-            if (seen.has(l.db_id)) return false;
-            seen.add(l.db_id);
-            return true;
-          });
-          return deduped.slice(-5000);
-        });
+      const items = data.items ?? [];
+      if (items.length) {
+        let minId = 0;
+        for (const l of items) {
+          if (l.db_id && (minId === 0 || l.db_id < minId)) minId = l.db_id;
+        }
+        // 即使整批都被去重也要推进锚点，否则同一批 200 行会被反复请求。
+        if (minId > 0) oldestDbIdRef.current = minId;
+        setLines((prev) => mergeOlder(prev, items, before === 0));
       }
-      setHasMore(data.has_more ?? false);
+      setHasMore(items.length > 0 && (data.has_more ?? false));
     } finally {
       setLoadingHistory(false);
     }
@@ -214,7 +209,16 @@ export default function LogsPage() {
           >
             {paused ? ui("screen.eb0c326b60ae89") : ui("screen.8d12fc0d4eb260")}
           </Button>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => setLines([])}>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={() => {
+              oldestDbIdRef.current = 0;
+              setHasMore(true);
+              setLines([]);
+            }}
+          >
             {ui("screen.1ef3de06b32e52")}
           </Button>
           <span className="ml-auto text-xs text-muted-foreground">
