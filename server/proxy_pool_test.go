@@ -629,38 +629,46 @@ func TestProxyPoolEmptyPersistenceDoesNotResurrectLegacyProxy(t *testing.T) {
 	}
 }
 
-func TestMergeMaskedProxyURLPreservesOnlyPassword(t *testing.T) {
-	got, err := mergeMaskedProxyURL("http://***@NEW.example:9090", "http://old:secret@old.example:8080")
-	if err != nil {
-		t.Fatal(err)
+// TestMergeMaskedProxyURL tables the masked-credential splice: which half a
+// masked update replaces, which half it keeps, and when the splice must refuse.
+func TestMergeMaskedProxyURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		old     string
+		want    string
+		wantErr bool
+	}{
+		{"empty raw means clear", "", "http://old:secret@old.example:8080", "", false},
+		{"whitespace raw means clear", "   ", "http://old:secret@old.example:8080", "", false},
+		{"no mask passes through", "http://new.example:9090", "http://old:secret@old.example:8080", "http://new.example:9090", false},
+		{"full credentials pass through", "http://user:pw@new.example:9090", "", "http://user:pw@new.example:9090", false},
+		{"masked user takes saved user and password", "http://***@NEW.example:9090", "http://old:secret@old.example:8080", "http://old:secret@NEW.example:9090", false},
+		{"masked user takes saved user only", "http://***@NEW.example:9090", "http://old@old.example:8080", "http://old@NEW.example:9090", false},
+		{"masked password keeps new user", "http://newuser:***@NEW.example:9090", "http://old:secret@old.example:8080", "http://newuser:secret@NEW.example:9090", false},
+		{"masked password takes saved user only", "http://newuser:***@NEW.example:9090", "http://old@old.example:8080", "http://newuser@NEW.example:9090", false},
+		{"masked user wins over a submitted password", "http://***:newpw@NEW.example:9090", "http://old:secret@old.example:8080", "http://old:secret@NEW.example:9090", false},
+		{"socks5 splice", "socks5://u:***@NEW.example:1080", "socks5://old:secret@old.example:1080", "socks5://u:secret@NEW.example:1080", false},
+		{"mask without saved auth", "http://***@NEW.example:9090", "", "", true},
+		{"mask with saved url lacking auth", "http://***@NEW.example:9090", "http://old.example:8080", "", true},
+		{"invalid raw is rejected", "http://user:secret@", "", "", true},
 	}
-	if got != "http://old:secret@NEW.example:9090" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestMergeMaskedProxyURLErrorIsMasked(t *testing.T) {
-	_, err := mergeMaskedProxyURL("http://user:secret@", "")
-	if err == nil || strings.Contains(err.Error(), "secret") {
-		t.Fatalf("unmasked error: %v", err)
-	}
-}
-
-func TestMergeMaskedProxyURLKeepsUserWithMaskedPassword(t *testing.T) {
-	got, err := mergeMaskedProxyURL("http://newuser:***@NEW.example:9090", "http://old:secret@old.example:8080")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "http://newuser:secret@NEW.example:9090" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestMergeMaskedProxyURLRejectsMaskWithoutSavedAuth(t *testing.T) {
-	for _, old := range []string{"", "http://old.example:8080"} {
-		if _, err := mergeMaskedProxyURL("http://***@NEW.example:9090", old); err == nil {
-			t.Fatalf("old=%q: masked credentials accepted without saved auth", old)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mergeMaskedProxyURL(tc.raw, tc.old)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("raw=%q old=%q err=%v, wantErr=%v", tc.raw, tc.old, err, tc.wantErr)
+			}
+			if err != nil {
+				if strings.Contains(err.Error(), "secret") {
+					t.Fatalf("error leaks the credential: %v", err)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("raw=%q old=%q got %q, want %q", tc.raw, tc.old, got, tc.want)
+			}
+		})
 	}
 }
 

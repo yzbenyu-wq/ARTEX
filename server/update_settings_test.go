@@ -165,3 +165,39 @@ func TestUpdateSettingsMasksProxyCredentials(t *testing.T) {
 		t.Fatalf("rejected save changed proxy to %q", cfg.Proxy)
 	}
 }
+
+// TestMergeMaskedUpdateProxy tables the updater path: its parser accepts
+// socks5h, and a masked half splices from the saved proxy like the agent paths.
+func TestMergeMaskedUpdateProxy(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		saved   string
+		want    string
+		wantErr bool
+	}{
+		{"empty raw means clear", "", "socks5h://u:p@h:1080", "", false},
+		{"plain value passes through", "http://new:8080", "socks5h://old:secret@old:1080", "http://new:8080", false},
+		{"socks5h masked password", "socks5h://u:***@NEW:1080", "socks5h://old:secret@old:1080", "socks5h://u:secret@NEW:1080", false},
+		{"masked user", "http://***@NEW:8080", "http://old:secret@old:8080", "http://old:secret@NEW:8080", false},
+		{"unsupported scheme", "ftp://u:p@h:21", "", "", true},
+		{"mask without saved auth", "http://***@NEW:8080", "", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mergeMaskedUpdateProxy(tc.raw, tc.saved)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("raw=%q saved=%q err=%v, wantErr=%v", tc.raw, tc.saved, err, tc.wantErr)
+			}
+			if err != nil {
+				if strings.Contains(err.Error(), "secret") {
+					t.Fatalf("error leaks the credential: %v", err)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("raw=%q saved=%q got %q, want %q", tc.raw, tc.saved, got, tc.want)
+			}
+		})
+	}
+}

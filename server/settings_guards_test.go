@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -194,33 +195,73 @@ func TestPutMCPServerSettingsCorruptAccess(t *testing.T) {
 	}
 }
 
-// TestPutMCPServerSettingsPartialUpdateKeepsOtherList is the control case: a
-// valid stored row still accepts partial updates and keeps the unset list.
-func TestPutMCPServerSettingsPartialUpdateKeepsOtherList(t *testing.T) {
+// TestPutMCPServerSettingsPartialUpdate tables the merge semantics: a field
+// the request omits keeps its stored list, an explicit empty list clears it,
+// and an invalid entry leaves the stored row untouched.
+func TestPutMCPServerSettingsPartialUpdate(t *testing.T) {
 	s := guardTestServer(t)
-	if err := s.m.pg.SetSetting(db.SettingMCPServerAccess, `{"allowed_ips":["203.0.113.1"],"trusted_proxies":["10.0.0.0/8"]}`); err != nil {
-		t.Fatal(err)
-	}
+	const initial = `{"allowed_ips":["203.0.113.1"],"trusted_proxies":["10.0.0.0/8"]}`
 	t.Cleanup(func() { _, _ = s.m.pg.Exec("DELETE FROM settings WHERE key=$1", db.SettingMCPServerAccess) })
 
-	w := httptest.NewRecorder()
-	s.putMCPServerSettings(w, httptest.NewRequest(http.MethodPut, "/api/settings/mcp-server",
-		strings.NewReader(`{"trusted_proxies":["10.1.0.0/16"]}`)))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	put := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.putMCPServerSettings(w, httptest.NewRequest(http.MethodPut, "/api/settings/mcp-server", strings.NewReader(body)))
+		return w
 	}
-	raw, _, err := s.m.pg.GetSetting(db.SettingMCPServerAccess)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name        string
+		body        string
+		wantStatus  int
+		wantAllowed []string
+		wantTrusted []string
+	}{
+		{
+			name: "trusted only keeps allowed", body: `{"trusted_proxies":["10.1.0.0/16"]}`,
+			wantStatus: http.StatusOK, wantAllowed: []string{"203.0.113.1"}, wantTrusted: []string{"10.1.0.0/16"},
+		},
+		{
+			name: "allowed only keeps trusted", body: `{"allowed_ips":["203.0.113.0/24"]}`,
+			wantStatus: http.StatusOK, wantAllowed: []string{"203.0.113.0/24"}, wantTrusted: []string{"10.0.0.0/8"},
+		},
+		{
+			name: "both lists replace both", body: `{"allowed_ips":["198.51.100.7"],"trusted_proxies":["10.2.0.0/16"]}`,
+			wantStatus: http.StatusOK, wantAllowed: []string{"198.51.100.7"}, wantTrusted: []string{"10.2.0.0/16"},
+		},
+		{
+			name: "explicit empty list clears it", body: `{"allowed_ips":[]}`,
+			wantStatus: http.StatusOK, wantAllowed: []string{}, wantTrusted: []string{"10.0.0.0/8"},
+		},
+		{
+			name: "invalid entry is refused", body: `{"allowed_ips":["not-an-ip"]}`,
+			wantStatus: http.StatusBadRequest, wantAllowed: []string{"203.0.113.1"}, wantTrusted: []string{"10.0.0.0/8"},
+		},
+		{
+			name: "empty body is refused", body: `{}`,
+			wantStatus: http.StatusBadRequest, wantAllowed: []string{"203.0.113.1"}, wantTrusted: []string{"10.0.0.0/8"},
+		},
 	}
-	var saved mcpAccessConfig
-	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
-		t.Fatal(err)
-	}
-	if len(saved.AllowedIPs) != 1 || saved.AllowedIPs[0] != "203.0.113.1" {
-		t.Fatalf("allowed_ips=%v, a partial update must keep the unset list", saved.AllowedIPs)
-	}
-	if len(saved.TrustedProxies) != 1 || saved.TrustedProxies[0] != "10.1.0.0/16" {
-		t.Fatalf("trusted_proxies=%v, want the submitted list", saved.TrustedProxies)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := s.m.pg.SetSetting(db.SettingMCPServerAccess, initial); err != nil {
+				t.Fatal(err)
+			}
+			if w := put(tc.body); w.Code != tc.wantStatus {
+				t.Fatalf("status=%d, want %d; body=%s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			raw, _, err := s.m.pg.GetSetting(db.SettingMCPServerAccess)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved mcpAccessConfig
+			if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+				t.Fatalf("stored row is not JSON: %v (%q)", err, raw)
+			}
+			if !reflect.DeepEqual(saved.AllowedIPs, tc.wantAllowed) {
+				t.Fatalf("allowed_ips=%v, want %v", saved.AllowedIPs, tc.wantAllowed)
+			}
+			if !reflect.DeepEqual(saved.TrustedProxies, tc.wantTrusted) {
+				t.Fatalf("trusted_proxies=%v, want %v", saved.TrustedProxies, tc.wantTrusted)
+			}
+		})
 	}
 }
