@@ -13,6 +13,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { api } from "@/lib/api";
 import { auth } from "@/lib/auth";
 import { cn, getInitials } from "@/lib/utils";
 
@@ -34,8 +35,16 @@ export function AccountSwitcher({
   const [pwOpen, setPwOpen] = useState(false);
 
   function handleLogout() {
-    auth.clearToken();
-    window.location.href = "/login";
+    // 先撤销服务端会话（顺带清 HttpOnly cookie）；网络失败也要退出本地会话。
+    void (async () => {
+      try {
+        await api.revokeSessions();
+      } catch {
+        // 服务端不可达时仍清本地 token 并跳转，避免点击无响应。
+      }
+      auth.clearToken();
+      window.location.href = "/login";
+    })();
   }
 
   if (!activeUser) {

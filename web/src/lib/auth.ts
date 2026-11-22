@@ -1,5 +1,4 @@
 const TOKEN_KEY = "artex_token";
-const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 天（秒）
 
 export interface CurrentUser {
   id: string;
@@ -18,13 +17,14 @@ export const auth = {
   },
 
   setToken(token: string): void {
+    // 只存 localStorage；会话 cookie 由服务端登录时以 HttpOnly 下发，脚本既读不到
+    // 也改不了，SSE 与 middleware 都用它。
     localStorage.setItem(TOKEN_KEY, token);
-    // 同步写 cookie，供 Next.js middleware 服务端读取
-    document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
   },
 
   clearToken(): void {
     localStorage.removeItem(TOKEN_KEY);
+    // 清掉旧版本前端写入的非 HttpOnly cookie，避免升级后残留一个过期会话。
     document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
   },
 

@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
+import { api } from "@/lib/api";
 import { auth } from "@/lib/auth";
 import { getInitials } from "@/lib/utils";
 
@@ -34,10 +35,17 @@ export function NavUser({
   const [pwOpen, setPwOpen] = React.useState(false);
 
   function handleLogout() {
-    auth.clearToken();
-    // 硬跳转：让浏览器用已清除的 cookie 发起全新请求，
-    // middleware 才能正确读到空 token 并放行 /login
-    window.location.href = "/login";
+    // 先撤销服务端会话（顺带清 HttpOnly cookie），再硬跳转，让 middleware
+    // 用已清空的 cookie 放行 /login。
+    void (async () => {
+      try {
+        await api.revokeSessions();
+      } catch {
+        // 服务端不可达时仍清本地 token 并跳转，避免点击无响应。
+      }
+      auth.clearToken();
+      window.location.href = "/login";
+    })();
   }
 
   return (

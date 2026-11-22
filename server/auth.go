@@ -27,6 +27,11 @@ const (
 	jwtTTL     = 7 * 24 * time.Hour
 	keyChars   = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
+	// authCookieName carries the session JWT for requests that cannot set an
+	// Authorization header (EventSource streams, plain browser navigations).
+	// Login, init and password change set it; revoke clears it.
+	authCookieName = "artex_token"
+
 	// 下限与 setup 页的前端校验一致——校验只放在前端等于没放，直接打 API 就能
 	// 绕过。上限是 bcrypt 的硬限制：超过 72 字节 GenerateFromPassword 会返回
 	// ErrPasswordTooLong，提前挡掉好过让用户收到一句含义不明的「密码加密失败」。
@@ -221,31 +226,60 @@ func (s *Server) bumpAuthTokenVersion() (int64, error) {
 }
 
 // authTokenCandidates returns the JWT a request carries. An explicit Bearer
-// header is authoritative on its own; otherwise the artex_token cookie and the
-// ?token= query param (SSE cannot set headers) are offered in that order.
+// header is authoritative on its own; otherwise the artex_token cookie is used.
+// The ?token= query param is deliberately not accepted: tokens in URLs end up in
+// proxy logs, browser history and Referer headers, so SSE authenticates through
+// the HttpOnly cookie set at login instead.
 func authTokenCandidates(r *http.Request) (string, []string) {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer "), nil
 	}
-	var fallback []string
-	if c, err := r.Cookie("artex_token"); err == nil && c.Value != "" {
-		fallback = append(fallback, c.Value)
+	if c, err := r.Cookie(authCookieName); err == nil && c.Value != "" {
+		return "", []string{c.Value}
 	}
-	if q := r.URL.Query().Get("token"); q != "" {
-		fallback = append(fallback, q)
+	return "", nil
+}
+
+// setAuthCookie hands the browser an HttpOnly session cookie. Secure is set
+// whenever the request arrived over TLS, directly or through a TLS-terminating
+// proxy; SameSite=Lax keeps it off cross-site requests while still allowing
+// top-level navigation.
+func setAuthCookie(w http.ResponseWriter, r *http.Request, tok string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     authCookieName,
+		Value:    tok,
+		Path:     "/",
+		MaxAge:   int(jwtTTL / time.Second),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+}
+
+func clearAuthCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     authCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
 	}
-	return "", fallback
+	proto := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]))
+	return proto == "https"
 }
 
 // authenticateRequest verifies whichever JWT the request carries.
 //
 // The Bearer header is authoritative: an invalid one is rejected even when a
 // valid cookie is also present, so a bad header cannot be silently rescued.
-// Cookie and query param fall back on each other only when verification fails.
-// A browser can hold a stale artex_token cookie (left by another deployment on
-// the same host, or by a key change) next to a fresh token in localStorage;
-// treating the first non-empty value as final made every SSE stream 401 even
-// though the ?token= it had just sent was valid.
 func (s *Server) authenticateRequest(r *http.Request) (bool, error) {
 	explicit, fallback := authTokenCandidates(r)
 	if explicit != "" {
@@ -361,6 +395,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeProductError(w, 500, "token_failed", "token 生成失败", nil)
 		return
 	}
+	setAuthCookie(w, r, tok)
 	writeJSON(w, 200, map[string]any{"token": tok})
 }
 
@@ -432,6 +467,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeProductError(w, 500, "token_failed", "密码已修改，请重新登录", nil)
 		return
 	}
+	setAuthCookie(w, r, tok)
 	writeJSON(w, 200, map[string]any{"ok": true, "token": tok})
 }
 
@@ -456,6 +492,7 @@ func (s *Server) authRevokeSessions(w http.ResponseWriter, r *http.Request) {
 		writeProductError(w, 500, "revoke_failed", "撤销失败: "+err.Error(), nil)
 		return
 	}
+	clearAuthCookie(w, r)
 	writeJSON(w, 200, map[string]any{"ok": true, "token_version": next})
 }
 
@@ -510,6 +547,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeProductError(w, 500, "token_failed", "token 生成失败", nil)
 		return
 	}
+	setAuthCookie(w, r, tok)
 	writeJSON(w, 200, map[string]any{"token": tok})
 }
 

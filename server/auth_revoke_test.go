@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -129,6 +130,96 @@ func TestRevokeEndpointInvalidatesTokens(t *testing.T) {
 	s.authRevokeSessions(rec, httptest.NewRequest(http.MethodPost, "/api/auth/revoke", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous revoke = %d, want 401", rec.Code)
+	}
+}
+
+// Login must hand the browser an HttpOnly cookie carrying the same JWT; SSE has
+// no way to set an Authorization header, and the token must not travel in a URL.
+// Revoke must clear that cookie in the same response that bumps the version.
+func TestAuthSessionCookie(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	preserveAuthSettings(t, m, authVerKey, authPassKey)
+
+	hash, err := bcrypt.GenerateFromPassword([]byte("admin-password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.pg.SetSetting(authPassKey, string(hash)); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{m: m, jwtKey: []byte("test-only-signing-key-32-characters")}
+
+	cookieFrom := func(res *http.Response) *http.Cookie {
+		t.Helper()
+		for _, c := range res.Cookies() {
+			if c.Name == authCookieName {
+				return c
+			}
+		}
+		return nil
+	}
+
+	for _, tc := range []struct {
+		name       string
+		proto      string
+		wantSecure bool
+	}{
+		{"plain http", "", false},
+		{"tls-terminated proxy", "https", true},
+		{"proxy proto list", "https, http", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+				strings.NewReader(`{"username":"ARTEX","password":"admin-password"}`))
+			if tc.proto != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.proto)
+			}
+			rec := httptest.NewRecorder()
+			s.authLogin(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("login: %d %s", rec.Code, rec.Body.String())
+			}
+			var out struct {
+				Token string `json:"token"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Token == "" {
+				t.Fatalf("login token: %v %s", err, rec.Body.String())
+			}
+			c := cookieFrom(rec.Result())
+			if c == nil {
+				t.Fatal("login did not set the session cookie")
+			}
+			if c.Value != out.Token || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
+				t.Fatalf("cookie attributes: %+v", c)
+			}
+			if c.Secure != tc.wantSecure || c.MaxAge != int(jwtTTL/time.Second) {
+				t.Fatalf("cookie secure=%v max-age=%d, want %v/%d", c.Secure, c.MaxAge, tc.wantSecure, int(jwtTTL/time.Second))
+			}
+		})
+	}
+
+	cur, err := s.authTokenVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := signJWT(s.jwtKey, cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/revoke", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	s.authRevokeSessions(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("revoke: %d %s", rec.Code, rec.Body.String())
+	}
+	c := cookieFrom(rec.Result())
+	if c == nil || c.Value != "" || c.MaxAge >= 0 || !c.HttpOnly {
+		t.Fatalf("revoke must clear the cookie: %+v", c)
 	}
 }
 

@@ -280,7 +280,8 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 // to the Go backend on :8787, whose CORS is open.
 //
 // Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
-// Token is appended as ?token= because SSE can't carry cookies cross-origin.
+// EventSource cannot set an Authorization header, so streams authenticate with the
+// HttpOnly session cookie set at login — the token never appears in a URL.
 // mockReport returns a canned Markdown report for the demo.
 function mockReport(_task?: string): string {
   return `# ARTEX 渗透测试报告 — Acme Corp
@@ -310,9 +311,7 @@ export function sseUrl(path: string): string {
     (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
       ? `${window.location.protocol}//${window.location.hostname}:8787`
       : "");
-  const token = getToken();
-  const sep = path.includes("?") ? "&" : "?";
-  return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
+  return `${base}${path}`;
 }
 
 export function openSSE(path: string): EventSource {
@@ -429,6 +428,8 @@ export const api = {
       old_password: oldPassword,
       new_password: newPassword,
     }),
+  // 撤销服务端所有会话（含本机），并由服务端清除 HttpOnly 会话 cookie。
+  revokeSessions: () => post<{ ok: boolean; token_version: number }>("/auth/revoke"),
 
   // ---- tasks ----
   tasks: () =>

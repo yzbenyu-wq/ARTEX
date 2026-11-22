@@ -503,7 +503,18 @@ func TestBasicAuthPostgresLoginFlow(t *testing.T) {
 	if _, ok := parseAuthToken(login.Token, s.jwtKey); !ok {
 		t.Fatalf("Basic Auth login returned an invalid token: %s", w.Body.String())
 	}
-	cookie := w.Result().Cookies()[0]
+	// Login also sets the admin session cookie now, so pick the gate cookie by
+	// name instead of relying on it being the only Set-Cookie.
+	var cookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == basicAuthCookie {
+			cookie = c
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatal("Basic Auth login did not issue the gate cookie")
+	}
 	r = httptest.NewRequest("PUT", "/api/settings/basic-auth", strings.NewReader(`{"enabled":false}`))
 	r.AddCookie(cookie)
 	r.Header.Set("Authorization", "Bearer "+login.Token)
