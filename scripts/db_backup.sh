@@ -4,6 +4,8 @@
 # 每份 dump 生成后先做 pg_restore --list 完整性校验；距上次演练超过 BACKUP_DRILL_EVERY 天
 # 时，把最新 dump 灌进临时库比对关键表行数，无误后删掉临时库。
 set -u
+# dump 里含明文 LLM key，产物只给属主读（644 -> 600）。
+umask 077
 
 : "${PGHOST:=postgres}"
 : "${PGUSER:=artex}"
