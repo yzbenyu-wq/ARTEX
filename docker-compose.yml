@@ -14,6 +14,25 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # 每日 pg_dump 到 ./backups，保留最近 7 份。只在备份容器里跑，不动 artex/postgres。
+  db-backup:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-artex}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-artex}
+      BACKUP_KEEP_DAYS: "7"
+    volumes:
+      - ./backups:/backups
+      - ./scripts/db_backup.sh:/usr/local/bin/db_backup.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/db_backup.sh"]
+    restart: unless-stopped
+
   artex:
     image: ${ARTEX_IMAGE:-ghcr.io/yzbenyu-wq/artex}:${ARTEX_TAG:-latest}
     depends_on:
