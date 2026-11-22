@@ -390,6 +390,12 @@ func (s *Server) putMCPServerSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
+	// Validate first, then commit every field in one transaction: a save that
+	// updates the allowlist but fails to flip enabled (or vice versa) would
+	// leave the endpoint in a state the administrator never asked for.
+	values := map[string]string{}
+	var accessCfg mcpAccessConfig
+	accessChanged := false
 	if req.AllowedIPs != nil || req.TrustedProxies != nil {
 		cfg, _, err := loadMCPAccess(pg)
 		if err != nil {
@@ -408,17 +414,21 @@ func (s *Server) putMCPServerSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data, _ := json.Marshal(cfg)
-		if err := pg.SetSetting(db.SettingMCPServerAccess, string(data)); err != nil {
-			writeErr(w, 500, "保存失败: "+err.Error())
-			return
-		}
-		log.Printf("[mcp-server] 来源白名单已更新: 允许 %d 条, 可信代理 %d 条", len(cfg.AllowedIPs), len(cfg.TrustedProxies))
+		values[db.SettingMCPServerAccess] = string(data)
+		accessCfg = cfg
+		accessChanged = true
 	}
 	if req.Enabled != nil {
-		if err := pg.SetBool(db.SettingMCPServerEnabled, *req.Enabled); err != nil {
-			writeErr(w, 500, "保存失败: "+err.Error())
-			return
-		}
+		values[db.SettingMCPServerEnabled] = map[bool]string{true: "true", false: "false"}[*req.Enabled]
+	}
+	if err := pg.SetSettingsAtomic(r.Context(), values); err != nil {
+		writeErr(w, 500, "保存失败: "+err.Error())
+		return
+	}
+	if accessChanged {
+		log.Printf("[mcp-server] 来源白名单已更新: 允许 %d 条, 可信代理 %d 条", len(accessCfg.AllowedIPs), len(accessCfg.TrustedProxies))
+	}
+	if req.Enabled != nil {
 		log.Printf("[mcp-server] MCP 服务端已%s", map[bool]string{true: "开启", false: "关闭"}[*req.Enabled])
 	}
 	s.getMCPServerSettings(w, r)

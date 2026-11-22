@@ -228,16 +228,47 @@ func (s *Server) bumpAuthTokenVersion() (int64, error) {
 	return next, nil
 }
 
-// extractToken reads the JWT from Authorization: Bearer header,
-// artex_token cookie, or ?token= query param (for SSE connections).
-func extractToken(r *http.Request) string {
+// authTokenCandidates returns the JWT a request carries. An explicit Bearer
+// header is authoritative on its own; otherwise the artex_token cookie and the
+// ?token= query param (SSE cannot set headers) are offered in that order.
+func authTokenCandidates(r *http.Request) (string, []string) {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		return strings.TrimPrefix(h, "Bearer ")
+		return strings.TrimPrefix(h, "Bearer "), nil
 	}
+	var fallback []string
 	if c, err := r.Cookie("artex_token"); err == nil && c.Value != "" {
-		return c.Value
+		fallback = append(fallback, c.Value)
 	}
-	return r.URL.Query().Get("token")
+	if q := r.URL.Query().Get("token"); q != "" {
+		fallback = append(fallback, q)
+	}
+	return "", fallback
+}
+
+// authenticateRequest verifies whichever JWT the request carries.
+//
+// The Bearer header is authoritative: an invalid one is rejected even when a
+// valid cookie is also present, so a bad header cannot be silently rescued.
+// Cookie and query param fall back on each other only when verification fails.
+// A browser can hold a stale artex_token cookie (left by another deployment on
+// the same host, or by a key change) next to a fresh token in localStorage;
+// treating the first non-empty value as final made every SSE stream 401 even
+// though the ?token= it had just sent was valid.
+func (s *Server) authenticateRequest(r *http.Request) (bool, error) {
+	explicit, fallback := authTokenCandidates(r)
+	if explicit != "" {
+		return s.verifyAdminJWT(explicit)
+	}
+	for _, tok := range fallback {
+		ok, err := s.verifyAdminJWT(tok)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // requireAuth wraps h with JWT validation.
@@ -249,12 +280,12 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			h.ServeHTTP(w, r)
 			return
 		}
-		tok := extractToken(r)
-		if tok == "" {
+		explicit, fallback := authTokenCandidates(r)
+		if explicit == "" && len(fallback) == 0 {
 			writeProductError(w, 401, "unauthorized", "未授权", nil)
 			return
 		}
-		ok, err := s.verifyAdminJWT(tok)
+		ok, err := s.authenticateRequest(r)
 		if err != nil {
 			writeProductError(w, 503, "data_unavailable", errDataSourceUnavailable, nil)
 			return
@@ -349,7 +380,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	ok, err := s.verifyAdminJWT(extractToken(r))
+	ok, err := s.authenticateRequest(r)
 	if err != nil {
 		writeProductError(w, 503, "data_unavailable", errDataSourceUnavailable, nil)
 		return
@@ -419,7 +450,7 @@ func (s *Server) authRevokeSessions(w http.ResponseWriter, r *http.Request) {
 	if s.pg(w) == nil {
 		return
 	}
-	ok, err := s.verifyAdminJWT(extractToken(r))
+	ok, err := s.authenticateRequest(r)
 	if err != nil {
 		writeProductError(w, 503, "data_unavailable", errDataSourceUnavailable, nil)
 		return

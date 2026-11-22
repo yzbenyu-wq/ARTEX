@@ -637,8 +637,8 @@ export const settingsMessages = {
     "\nNote: Updating inside a container replaces only ARTEX, not tools such as playwright / nmap in the image. ",
   ],
   "settings.dockerUpdateWarningEnd": [
-    "若新版本依赖新工具，请改用 docker compose pull。",
-    "Use docker compose pull if the new version requires new tools.",
+    "若新版本依赖新工具，请改用 docker compose pull；重建容器也会退回镜像自带的版本。",
+    "Use docker compose pull if the new version requires new tools; recreating the container also restores the version in the image.",
   ],
   "settings.preparing": ["准备中…", "Preparing…"],
   "settings.updateStartFailedPrefix": ["启动更新失败：", "Could not start update: "],
