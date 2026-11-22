@@ -5,9 +5,24 @@ import (
 	"testing"
 )
 
-func TestProxyEnvEmptyIsNil(t *testing.T) {
-	if env := proxyEnv("", ""); env != nil {
-		t.Fatalf("proxyEnv(\"\", \"\") = %v, want nil (direct)", env)
+func TestProxyEnvEmptyIsSanitized(t *testing.T) {
+	// Without a proxy the child still gets an explicit environment so the SDK
+	// does not inherit os.Environ() (which holds the DSN and LLM keys).
+	env := proxyEnv("", "")
+	if len(env) == 0 {
+		t.Fatal("proxyEnv(\"\", \"\") is empty; SDK would inherit os.Environ()")
+	}
+	var hasPath bool
+	for _, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			hasPath = true
+		}
+		if strings.HasPrefix(e, "ARTEX_PG_DSN=") || strings.HasPrefix(e, "ANTHROPIC_API_KEY=") || strings.HasPrefix(e, "OPENAI_API_KEY=") || strings.HasPrefix(e, "POSTGRES_PASSWORD=") {
+			t.Fatalf("secret inherited by child env: %s", e)
+		}
+	}
+	if !hasPath {
+		t.Errorf("sanitized env missing PATH: %v", env)
 	}
 }
 

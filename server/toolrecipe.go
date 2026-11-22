@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/childenv"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -298,7 +299,7 @@ func detectProxy(env []string) string {
 // recipeEnv builds the child environment: os.Environ + the caller's BashEnv,
 // then applies proxy_mode. For none every proxy/CA var is removed from both.
 func recipeEnv(sessionEnv []string, mode, proxy string) []string {
-	env := append(os.Environ(), sessionEnv...)
+	env := childenv.With(sessionEnv...)
 	switch mode {
 	case "none":
 		filtered := env[:0]

@@ -576,3 +576,57 @@ func TestBasicAuthExpiredSessionRecovery(t *testing.T) {
 		t.Fatalf("original admin session did not recover: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestBasicAuthRateLimited(t *testing.T) {
+	s, _ := basicAuthTestServer(t)
+	s.loginLimiter = newLoginLimiter()
+	h := s.requireBasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	if w := saveBasicAuthForTest(s, `{"enabled":true,"username":"entry","password":"test-pass"}`); w.Code != http.StatusOK {
+		t.Fatalf("enable: %s", w.Body.String())
+	}
+	attempt := func(user, pass, remote string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		r.RemoteAddr = remote
+		r.SetBasicAuth(user, pass)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	const ip = "198.51.100.7:4242"
+	for i := 0; i < loginMaxFailures; i++ {
+		if w := attempt("entry", "wrong", ip); w.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status=%d, want 401", i+1, w.Code)
+		}
+	}
+	w := attempt("entry", "test-pass", ip)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked source status=%d, want 429", w.Code)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Fatal("429 missing Retry-After")
+	}
+	if w := attempt("entry", "test-pass", "203.0.113.9:5555"); w.Code != http.StatusNoContent {
+		t.Fatalf("unrelated source status=%d, want 204", w.Code)
+	}
+}
+
+func TestStoredKeyMatches(t *testing.T) {
+	tests := []struct {
+		target, saved string
+		want          bool
+	}{
+		{"", "https://api.example.com/v1", true},
+		{"  ", "https://api.example.com/v1", true},
+		{"https://api.example.com/v1", "https://api.example.com/v1", true},
+		{"https://api.example.com/v1/", "https://api.example.com/v1", true},
+		{"https://API.example.com/v1", "https://api.example.com/v1", true},
+		{"https://evil.example.net/v1", "https://api.example.com/v1", false},
+		{"https://api.example.com/v1/../../evil", "https://api.example.com/v1", false},
+		{"https://api.example.com/v1", "", false},
+	}
+	for _, tt := range tests {
+		if got := storedKeyMatches(tt.target, tt.saved); got != tt.want {
+			t.Errorf("storedKeyMatches(%q, %q) = %v, want %v", tt.target, tt.saved, got, tt.want)
+		}
+	}
+}

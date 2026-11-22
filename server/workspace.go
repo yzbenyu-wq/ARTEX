@@ -33,7 +33,53 @@ func (s *Server) wsResolve(rel string) (string, bool) {
 	if abs != base && !strings.HasPrefix(abs, base+string(os.PathSeparator)) {
 		return "", false
 	}
+	if !s.wsWithinRoot(abs) {
+		return "", false
+	}
 	return abs, true
+}
+
+// wsDeniedTop are workspace subtrees the file manager must never expose:
+// the MITM CA store holds a private key, and the traffic tree mirrors captured
+// credentials. They keep their own API; there is no reason to browse them.
+var wsDeniedTop = map[string]bool{"traffic": true, "keys": true}
+
+// wsWithinRoot rejects paths outside the workspace after resolving symlinks.
+// Lexical confinement alone lets an agent drop a symlink in the workspace and
+// have the UI follow it to /app/keys. Non-existent tails are allowed as long
+// as their nearest existing ancestor resolves inside the root.
+func (s *Server) wsWithinRoot(abs string) bool {
+	base := filepath.Clean(s.m.dir)
+	rel, err := filepath.Rel(base, abs)
+	if err != nil {
+		return false
+	}
+	if top := strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]; wsDeniedTop[strings.ToLower(top)] {
+		return false
+	}
+	baseReal, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		baseReal = base
+	}
+	probe := abs
+	var tail []string
+	for {
+		if _, err := os.Lstat(probe); err == nil {
+			break
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return false
+		}
+		tail = append([]string{filepath.Base(probe)}, tail...)
+		probe = parent
+	}
+	real, err := filepath.EvalSymlinks(probe)
+	if err != nil {
+		return false
+	}
+	full := filepath.Join(append([]string{real}, tail...)...)
+	return full == baseReal || strings.HasPrefix(full, baseReal+string(os.PathSeparator))
 }
 
 // wsRel renders an absolute path back as a workspace-relative path (forward slashes).
@@ -79,7 +125,7 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 	for _, e := range ents {
 		// 内部簿记目录（任务删除暂存 .delete-staging、归档暂存 .staging 等）以点开头，
 		// 不属于用户可见的工作区内容，文件管理器里一律不列。
-		if strings.HasPrefix(e.Name(), ".") {
+		if strings.HasPrefix(e.Name(), ".") || wsDeniedTop[strings.ToLower(e.Name())] {
 			continue
 		}
 		info, err := e.Info()
@@ -231,7 +277,7 @@ func (s *Server) wsPreview(w http.ResponseWriter, r *http.Request) {
 	if filepath.IsAbs(rawPath) {
 		base := filepath.Clean(s.m.dir)
 		candidate := filepath.Clean(rawPath)
-		ok = candidate == base || strings.HasPrefix(candidate, base+string(os.PathSeparator))
+		ok = (candidate == base || strings.HasPrefix(candidate, base+string(os.PathSeparator))) && s.wsWithinRoot(candidate)
 		if ok {
 			abs = candidate
 		}

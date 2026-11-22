@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/internal/httpidentity"
+	"github.com/Autumn-27/artex/internal/netguard"
 	actool "github.com/Autumn-27/norma/tool"
 	"golang.org/x/net/html"
 )
@@ -36,9 +38,22 @@ func New(cfg actool.WebFetchConfig) actool.CoreTool {
 
 const maxFetchBytes = 2 << 20 // 2 MiB
 
+// Indirection points so tests can exercise loopback httptest servers without
+// weakening the production guard.
+var (
+	checkTarget = netguard.CheckURL
+	dialGuard   = netguard.DialControl
+)
+
 // newFetchClient returns an HTTP client honoring the proxy / TLS config.
-func newFetchClient(cfg actool.WebFetchConfig) *http.Client {
+// guardDial installs a connect-time SSRF guard; it must stay off for a proxied
+// client, whose dial target is the (local) proxy rather than the remote host.
+// Redirects are always re-validated hop by hop.
+func newFetchClient(cfg actool.WebFetchConfig, guardDial bool) *http.Client {
 	tr := &http.Transport{}
+	if guardDial {
+		tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second, Control: dialGuard}).DialContext
+	}
 	if cfg.Proxy != "" {
 		if pu, err := url.Parse(cfg.Proxy); err == nil {
 			tr.Proxy = http.ProxyURL(pu)
@@ -60,7 +75,15 @@ func newFetchClient(cfg actool.WebFetchConfig) *http.Client {
 			}
 		}
 	}
-	return &http.Client{Transport: tr}
+	return &http.Client{
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("停止跟随重定向：超过 5 次")
+			}
+			return checkTarget(req.Context(), req.URL)
+		},
+	}
 }
 
 // proxyLikelyErr reports whether a fetch error is the kind a recording/MITM proxy
@@ -122,14 +145,15 @@ func staticAssetExt(rawURL string) string {
 }
 
 func webFetchRunner(cfg actool.WebFetchConfig) func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
-	client := newFetchClient(cfg)
+	client := newFetchClient(cfg, cfg.Proxy == "")
 	// direct is the no-proxy fallback used when a proxied fetch fails for a
 	// proxy-caused reason (closed tunnel / failed CONNECT / TLS or HTTP2 mismatch):
 	// it bypasses the configured proxy so a recording/MITM hiccup doesn't fail an
 	// otherwise-reachable URL. nil when no proxy is configured (nothing to bypass).
+	// Unlike the proxied path, its dials are guarded against loopback/link-local.
 	var direct *http.Client
 	if cfg.Proxy != "" {
-		direct = newFetchClient(actool.WebFetchConfig{InsecureTLS: cfg.InsecureTLS})
+		direct = newFetchClient(actool.WebFetchConfig{InsecureTLS: cfg.InsecureTLS}, true)
 	}
 	return func(ctx context.Context, input json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
 		var in struct {
@@ -147,6 +171,15 @@ func webFetchRunner(cfg actool.WebFetchConfig) func(context.Context, json.RawMes
 		}
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
+		target, err := url.Parse(in.URL)
+		if err != nil {
+			return actool.Errorf("Error: " + err.Error()), nil
+		}
+		// Refuse loopback / link-local / metadata targets before any connection:
+		// the agent is untrusted input, and the app itself listens on localhost.
+		if err := checkTarget(cctx, target); err != nil {
+			return actool.Errorf("Error: " + err.Error()), nil
+		}
 		req, err := http.NewRequestWithContext(cctx, http.MethodGet, in.URL, nil)
 		if err != nil {
 			return actool.Errorf("Error: " + err.Error()), nil

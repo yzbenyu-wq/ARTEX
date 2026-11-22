@@ -34,6 +34,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/lqqyt2423/go-mitmproxy/cert"
 	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
 	_ "modernc.org/sqlite"
 )
@@ -182,11 +183,18 @@ type Traffic struct {
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
 func Open(dir, addr string) (*Traffic, error) {
-	for _, d := range []string{dir, filepath.Join(dir, "_index"), filepath.Join(dir, "_blobs"), filepath.Join(dir, "_ca")} {
+	for _, d := range []string{dir, filepath.Join(dir, "_index"), filepath.Join(dir, "_blobs")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
 		}
 	}
+	caDir := filepath.Join(dir, "_ca")
+	if err := os.MkdirAll(caDir, 0o700); err != nil {
+		return nil, err
+	}
+	// The directory also holds mitmproxy-ca.pem, which embeds the CA private
+	// key; keep it and the directory owner-only even on existing installs.
+	secureCAFiles(caDir)
 	// busy_timeout is a per-connection setting, so it belongs in the DSN rather
 	// than in a one-off Exec: the pool opens connections on demand, and an Exec
 	// only configures whichever one happened to serve it — leaving every other
@@ -212,7 +220,14 @@ func Open(dir, addr string) (*Traffic, error) {
 	p, err := mproxy.NewProxy(&mproxy.Options{
 		Addr:        addr,
 		SslInsecure: true,
-		CaRootPath:  filepath.Join(dir, "_ca"),
+		CaRootPath:  caDir,
+		// go-mitmproxy creates the CA files with the process umask; wrap the
+		// factory so the private key never sits at 0644 in the workspace.
+		NewCaFunc: func() (cert.CA, error) {
+			ca, err := cert.NewSelfSignCA(caDir)
+			secureCAFiles(caDir)
+			return ca, err
+		},
 	})
 	if err != nil {
 		db.Close()
@@ -456,6 +471,15 @@ func ValidateProxyURL(raw string) (*url.URL, error) {
 		}
 	}
 	return u, nil
+}
+
+// secureCAFiles tightens permissions on the CA store: the directory and the
+// combined cert+key PEM are owner-only, while the public cert stays readable
+// (agents and the UI download it to trust the proxy).
+func secureCAFiles(dir string) {
+	_ = os.Chmod(dir, 0o700)
+	_ = os.Chmod(filepath.Join(dir, "mitmproxy-ca.pem"), 0o600)
+	_ = os.Chmod(filepath.Join(dir, "mitmproxy-ca-cert.pem"), 0o644)
 }
 
 // CACertPath returns the PEM CA cert clients must trust to verify HTTPS through

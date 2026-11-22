@@ -12,6 +12,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/internal/childenv"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
@@ -200,8 +201,11 @@ func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
 func ProxyEnv(proxyAddr, caCert string) []string { return proxyEnv(proxyAddr, caCert) }
 
 func proxyEnv(proxyAddr, caCert string) []string {
+	// Always hand over an explicit, secret-free environment: a nil BashEnv makes
+	// the SDK inherit os.Environ() wholesale, exposing the DSN and LLM keys to
+	// every shell command (and thus to the transcript).
 	if proxyAddr == "" {
-		return nil
+		return childenv.Sanitized()
 	}
 	env := []string{
 		"HTTP_PROXY=" + proxyAddr, "HTTPS_PROXY=" + proxyAddr,
@@ -218,7 +222,7 @@ func proxyEnv(proxyAddr, caCert string) []string {
 			"NODE_EXTRA_CA_CERTS="+caCert,
 		)
 	}
-	return env
+	return childenv.With(env...)
 }
 
 // workerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the worker system

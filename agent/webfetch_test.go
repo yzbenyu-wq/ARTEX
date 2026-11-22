@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/internal/webfetch"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
@@ -37,6 +38,8 @@ func (p *fetchFixtureProvider) Complete(_ context.Context, req llm.CompletionReq
 }
 
 func TestAgentSessionUsesConfiguredWebFetch(t *testing.T) {
+	restore := webfetch.AllowLoopbackForTest()
+	defer restore()
 	for _, ua := range []string{"", "Captured-UA/1.0"} {
 		t.Run(ua, func(t *testing.T) {
 			t.Setenv("ARTEX_HTTP_USER_AGENT", ua)

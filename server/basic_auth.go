@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -136,9 +138,20 @@ func (s *Server) requireBasicAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Basic Auth compares a bcrypt hash on every attempt, so an unbounded
+		// credential loop is both a guessing oracle and a CPU DoS. Reuse the
+		// login limiter under a separate key namespace.
+		limitKey := "basic:" + s.basicAuthClientKey(r)
+		if wait := s.loginLimiter.lockedFor(limitKey); wait > 0 {
+			retryAfter := int((wait + time.Second - 1) / time.Second)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			writeProductError(w, http.StatusTooManyRequests, "too_many_attempts", "认证失败次数过多，请稍后再试", map[string]any{"retry_after": retryAfter})
+			return
+		}
 		username, password, ok := r.BasicAuth()
 		if !ok || len(password) > maxPasswordBytes || username != cfg.Username ||
 			bcrypt.CompareHashAndPassword([]byte(cfg.PasswordHash), []byte(password)) != nil {
+			s.loginLimiter.fail(limitKey)
 			// Background requests use Bearer auth. Challenging them with Basic
 			// can trap the browser in repeated native dialogs. Let the client
 			// reload the current page once to renew only the outer session.
@@ -151,12 +164,25 @@ func (s *Server) requireBasicAuth(next http.Handler) http.Handler {
 		}
 		// Browser API requests already use Authorization: Bearer. A separate
 		// HttpOnly cookie keeps the gate satisfied without replacing that header.
+		s.loginLimiter.reset(limitKey)
 		if err := s.setBasicAuthCookie(w, r, cfg); err != nil {
 			writeProductError(w, 500, "auth_session_failed", "认证会话生成失败", nil)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// basicAuthClientKey mirrors loginClientKey but tolerates a missing store
+// (Basic Auth runs before many handlers and must never depend on the DB).
+func (s *Server) basicAuthClientKey(r *http.Request) string {
+	if s.m != nil && s.m.pg != nil {
+		return loginClientKey(r, s.m.pg)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func basicAuthPublicSettings(cfg basicAuthConfig) map[string]any {

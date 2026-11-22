@@ -26,6 +26,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept/jev"
 	"github.com/Autumn-27/artex/llmhttp"
+	"github.com/Autumn-27/artex/notify"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
 )
@@ -890,7 +891,74 @@ func (s *Server) pgListMCP(w http.ResponseWriter, r *http.Request) {
 	if ms == nil {
 		ms = []*db.MCPServer{}
 	}
+	for _, m := range ms {
+		maskMCPServerEnv(m)
+	}
 	writeJSON(w, 200, map[string]any{"servers": ms})
+}
+
+// maskMCPServerEnv replaces every env value with a mask. stdio env carries API
+// keys and http/sse env carries request headers (Authorization etc.), so the
+// whole map is treated as credentials rather than guessing which keys matter.
+func maskMCPServerEnv(m *db.MCPServer) {
+	if m == nil || len(m.Env) == 0 {
+		return
+	}
+	env, ok := decodeEnvMap(m.Env)
+	if !ok {
+		m.Env = json.RawMessage("{}")
+		return
+	}
+	for k, v := range env {
+		env[k] = notify.MaskedValue(v)
+	}
+	if b, err := json.Marshal(env); err == nil {
+		m.Env = b
+	}
+}
+
+// spliceMaskedEnv restores stored values for masked entries on update, so an
+// unchanged edit round-trips the real secret instead of persisting the mask.
+func spliceMaskedEnv(incoming, stored json.RawMessage) json.RawMessage {
+	env, ok := decodeEnvMap(incoming)
+	if !ok {
+		return incoming
+	}
+	old, _ := decodeEnvMap(stored)
+	changed := false
+	for k, v := range env {
+		if !notify.IsMasked(v) {
+			continue
+		}
+		changed = true
+		if real, ok := old[k]; ok {
+			env[k] = real
+		} else {
+			delete(env, k) // mask for a key that no longer exists
+		}
+	}
+	if !changed {
+		return incoming
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		return incoming
+	}
+	return b
+}
+
+func decodeEnvMap(raw json.RawMessage) (map[string]string, bool) {
+	if len(raw) == 0 {
+		return map[string]string{}, true
+	}
+	var env map[string]string
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, false
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	return env, true
 }
 
 func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
@@ -904,6 +972,16 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isNew := m.ID == 0
+	if !isNew {
+		if existing, err := pg.ListMCP(); err == nil {
+			for _, old := range existing {
+				if old.ID == m.ID {
+					m.Env = spliceMaskedEnv(m.Env, old.Env)
+					break
+				}
+			}
+		}
+	}
 	id, err := pg.SaveMCP(&m)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -2042,7 +2120,8 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	// Resolve API key: form input > profile stored key.
 	apiKey := strings.TrimSpace(req.APIKey)
 	if apiKey == "" && req.ProfileID != nil {
-		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
+		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil &&
+			storedKeyMatches(req.BaseURL, p.BaseURL) {
 			apiKey = p.APIKey
 		}
 	}

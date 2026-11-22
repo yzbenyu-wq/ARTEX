@@ -1653,11 +1653,14 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		baseURL, model := strings.TrimSpace(req.BaseURL), strings.TrimSpace(req.Model)
 		if req.ProfileID != nil {
 			if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-				if apiKey == "" {
-					apiKey = p.APIKey
-				}
 				if baseURL == "" {
 					baseURL = p.BaseURL
+				}
+				// A stored key may only follow its own endpoint; otherwise the
+				// caller could point base_url at a server they control and have
+				// ARTEX deliver the saved credential to it.
+				if apiKey == "" && storedKeyMatches(baseURL, p.BaseURL) {
+					apiKey = p.APIKey
 				}
 				if model == "" {
 					model = p.Model
@@ -1706,7 +1709,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// 会话头名同理：表单未带时用已存 profile 的值兜底。
 	if req.ProfileID != nil && (cfg.APIKey == "" || cfg.SessionHeaderKey == "") {
 		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-			if cfg.APIKey == "" {
+			if cfg.APIKey == "" && storedKeyMatches(cfg.BaseURL, p.BaseURL) {
 				cfg.APIKey = p.APIKey
 			}
 			if cfg.SessionHeaderKey == "" {
@@ -1716,8 +1719,12 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.APIKey == "" {
 		s.cfgMu.Lock()
-		cfg.APIKey = s.llmCfg.APIKey
+		globalBase := s.llmCfg.BaseURL
+		globalKey := s.llmCfg.APIKey
 		s.cfgMu.Unlock()
+		if storedKeyMatches(cfg.BaseURL, globalBase) {
+			cfg.APIKey = globalKey
+		}
 	}
 	if cfg.APIKey == "" {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": "未提供 API Key"})
@@ -1735,6 +1742,21 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "latency_ms": lat.Milliseconds(), "model": cfg.Model, "reply": truncateReply(reply),
 	})
+}
+
+// storedKeyMatches reports whether a saved API key may be sent to target.
+// An empty target means the saved profile/global base URL is used as-is; a
+// non-empty target must equal the saved base URL (trailing slash ignored).
+func storedKeyMatches(target, saved string) bool {
+	target = strings.TrimRight(strings.TrimSpace(target), "/")
+	if target == "" {
+		return true
+	}
+	saved = strings.TrimRight(strings.TrimSpace(saved), "/")
+	if saved == "" {
+		return false
+	}
+	return strings.EqualFold(target, saved)
 }
 
 // truncateReply clips a connection-test reply for display. A model told to answer

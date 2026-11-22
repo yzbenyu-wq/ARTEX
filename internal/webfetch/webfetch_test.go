@@ -8,16 +8,29 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	actool "github.com/Autumn-27/norma/tool"
 )
+
+// allowLoopback disables the SSRF guard for tests that use httptest servers on
+// 127.0.0.1. The production guard stays on by default; tests that assert the
+// guard must not call this.
+func allowLoopback(t *testing.T) {
+	t.Helper()
+	oldCheck, oldDial := checkTarget, dialGuard
+	checkTarget = func(context.Context, *url.URL) error { return nil }
+	dialGuard = func(string, string, syscall.RawConn) error { return nil }
+	t.Cleanup(func() { checkTarget, dialGuard = oldCheck, oldDial })
+}
 
 func callFetch(t *testing.T, tool actool.CoreTool, target string, extract bool) actool.Result {
 	t.Helper()
@@ -33,6 +46,7 @@ func callFetch(t *testing.T, tool actool.CoreTool, target string, extract bool) 
 }
 
 func TestIdentityAcrossRoutes(t *testing.T) {
+	allowLoopback(t)
 	for _, ua := range []string{"", "Captured-UA/1.0"} {
 		for _, route := range []string{"direct", "proxy", "fallback"} {
 			t.Run(route+"/"+ua, func(t *testing.T) {
@@ -119,6 +133,7 @@ func TestIdentityAcrossRoutes(t *testing.T) {
 }
 
 func TestTLSAndStaticAssetGuard(t *testing.T) {
+	allowLoopback(t)
 	t.Setenv("ARTEX_HTTP_USER_AGENT", "Captured-UA/1.0")
 	var calls atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +162,7 @@ func TestTLSAndStaticAssetGuard(t *testing.T) {
 }
 
 func TestIdentitySelectedForEachCall(t *testing.T) {
+	allowLoopback(t)
 	t.Setenv("ARTEX_HTTP_USER_AGENT", "Before-Tool-Creation")
 	tool := New(actool.WebFetchConfig{})
 	seen := make(chan string, 2)
@@ -171,5 +187,69 @@ func TestSDKMetadataPreserved(t *testing.T) {
 	local := New(actool.WebFetchConfig{})
 	if local.Name() != base.Name() || local.Description() != base.Description() || !reflect.DeepEqual(local.InputSchema(), base.InputSchema()) {
 		t.Fatal("SDK tool contract changed")
+	}
+}
+
+func TestWebFetchRejectsLocalTargets(t *testing.T) {
+	tool := New(actool.WebFetchConfig{})
+	for _, raw := range []string{
+		"http://127.0.0.1:8787/api/health",
+		"http://127.0.0.1:5432/",
+		"http://localhost:8787/",
+		"http://LOCALHOST./",
+		"http://[::1]:8787/",
+		"http://0.0.0.0:8787/",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://[fe80::1]/",
+		"http://2130706433:8787/",
+		"http://0x7f000001:8787/",
+	} {
+		res := callFetch(t, tool, raw, false)
+		if !res.IsError {
+			t.Errorf("fetch(%s) succeeded, want SSRF rejection: %s", raw, res.Flatten())
+			continue
+		}
+		if text := res.Flatten(); !strings.Contains(text, "本机") && !strings.Contains(text, "链路本地") {
+			t.Errorf("fetch(%s) error = %q, want 本机/链路本地 rejection", raw, text)
+		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestWebFetchRejectsRedirectToLocal(t *testing.T) {
+	client := newFetchClient(actool.WebFetchConfig{}, false)
+	client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"http://127.0.0.1:8787/api/health"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    r,
+		}, nil
+	})
+	_, err := client.Get("http://example.com/redirect-me")
+	if err == nil {
+		t.Fatal("redirect to loopback was followed, want rejection")
+	}
+	if !strings.Contains(err.Error(), "本机") && !strings.Contains(err.Error(), "链路本地") {
+		t.Fatalf("redirect error = %v, want 本机/链路本地 rejection", err)
+	}
+}
+
+func TestWebFetchCapsRedirects(t *testing.T) {
+	client := newFetchClient(actool.WebFetchConfig{}, false)
+	client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"http://example.com/next"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    r,
+		}, nil
+	})
+	_, err := client.Get("http://example.com/start")
+	if err == nil || !strings.Contains(err.Error(), "重定向") {
+		t.Fatalf("redirect cap error = %v, want 重定向 limit", err)
 	}
 }
