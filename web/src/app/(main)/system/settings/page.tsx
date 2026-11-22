@@ -174,6 +174,32 @@ export default function SystemSettingsPage() {
     setNoaCompaction(!!s.noa_compaction);
   }, []);
 
+  // 提交后的统一入口：落库成功但运行时重建失败时，后端用 runtime_warning 说明，
+  // 不能把它当保存失败回滚，否则 UI 与服务器状态会分叉。
+  const applySaved = React.useCallback(
+    (s: Settings) => {
+      apply(s);
+      if (s.runtime_warning) toast.warning(s.runtime_warning);
+    },
+    [apply],
+  );
+
+  // 保存失败时以服务器为准重新拉取，而不是凭本地假设回滚。
+  const refetchSettings = React.useCallback(() => {
+    api
+      .settings()
+      .then(apply)
+      .catch(() => undefined);
+  }, [apply]);
+
+  // settingsLoaded 为 false 说明这次加载没成功，表单里是初始空值；此时任何写入都可能
+  // 用空值覆盖服务器配置。按钮已禁用，这里再兜一层，防止入口回归。
+  const ensureSettingsLoaded = () => {
+    if (settingsLoaded) return true;
+    toast.error(t("settings.loadFailedBanner"));
+    return false;
+  };
+
   const saveWorkers = () => {
     if (!settingsLoaded) {
       toast.error(t("settings.workerConfigLoadFailed"));
@@ -206,7 +232,7 @@ export default function SystemSettingsPage() {
           worker_pools: workerPools.map((pool) => ({ ...pool, workers: Number(pool.workers) })),
         })
         .then((s) => {
-          apply(s);
+          applySaved(s);
           toast.success(t("settings.workerPoolsSaved"));
         })
         .catch((e) => toast.error(t("settings.saveFailed", { message: localizedError(e, t) })))
@@ -225,7 +251,7 @@ export default function SystemSettingsPage() {
     api
       .setSettings({ workers: n, worker_pools: [] })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(t("settings.workersSaved"));
       })
       .catch((e) => toast.error(t("settings.saveFailedPrefix") + localizedError(e, t)))
@@ -235,17 +261,19 @@ export default function SystemSettingsPage() {
   const addWorkerPool = () => setWorkerPools((pools) => [...pools, { profile_id: "", workers: 1 }]);
 
   const savePython = () => {
+    if (!ensureSettingsLoaded()) return;
     setSaving(true);
     api
       .setSettings({ python_interpreter: pyInterp.trim() })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(t("settings.pythonSaved"));
       })
       .catch((e) => toast.error(t("settings.saveFailedPrefix") + localizedError(e, t)))
       .finally(() => setSaving(false));
   };
   const detectPython = () => {
+    if (!ensureSettingsLoaded()) return;
     setSaving(true);
     api
       .detectPython()
@@ -254,7 +282,9 @@ export default function SystemSettingsPage() {
       .finally(() => setSaving(false));
   };
 
-  React.useEffect(() => {
+  const loadSettings = React.useCallback(() => {
+    setLoaded(false);
+    setSettingsLoaded(false);
     api
       .settings()
       .then((s) => {
@@ -270,11 +300,14 @@ export default function SystemSettingsPage() {
           .catch(() => undefined);
       })
       .catch(() => {
-        setSettingsLoaded(false);
-        toast.error(liveT("settings.workerConfigLocked"));
+        toast.error(liveT("settings.loadFailedBanner"));
       })
       .finally(() => setLoaded(true));
   }, [apply, liveT]);
+
+  React.useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
 
   React.useEffect(() => {
     api
@@ -284,25 +317,31 @@ export default function SystemSettingsPage() {
   }, []);
 
   const toggleTraffic = (v: boolean) => {
+    if (!ensureSettingsLoaded()) return;
     setTrafficCapture(v); // optimistic
     setSaving(true);
     api
       .setSettings({ traffic_capture: v })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         // 捕获开关一变，② 的链路就变了，旧结果不能留。
         clearEgressReport();
       })
-      .catch(() => setTrafficCapture(!v)) // revert on failure
+      .catch((e) => {
+        // 可能已落库（超时）也可能没落库：以服务器为准，不做本地盲回滚。
+        toast.error(t("settings.saveFailed", { message: localizedError(e, t) }));
+        refetchSettings();
+      })
       .finally(() => setSaving(false));
   };
 
   const saveTrafficExclude = () => {
+    if (!ensureSettingsLoaded()) return;
     setSaving(true);
     api
       .setSettings({ traffic_exclude_hosts: trafficExcludeInput })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(t("settings.trafficExcludeSaved"));
       })
       .catch((e) => toast.error(t("settings.saveFailed", { message: localizedError(e, t) })))
@@ -310,49 +349,52 @@ export default function SystemSettingsPage() {
   };
 
   const toggleBrowserScreenshot = (v: boolean) => {
+    if (!ensureSettingsLoaded()) return;
     setBrowserScreenshot(v);
     setSaving(true);
     api
       .setSettings({ browser_screenshot_enabled: v })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(v ? t("settings.screenshotsEnabled") : t("settings.screenshotsDisabled"));
       })
       .catch((e) => {
-        setBrowserScreenshot(!v);
         toast.error(t("settings.saveFailed", { message: localizedError(e, t) }));
+        refetchSettings();
       })
       .finally(() => setSaving(false));
   };
 
   const toggleBrowserScreenshotTimestamp = (v: boolean) => {
+    if (!ensureSettingsLoaded()) return;
     setBrowserScreenshotTimestamp(v);
     setSaving(true);
     api
       .setSettings({ browser_screenshot_timestamp_enabled: v })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(v ? t("settings.timestampsEnabled") : t("settings.timestampsDisabled"));
       })
       .catch((e) => {
-        setBrowserScreenshotTimestamp(!v);
         toast.error(t("settings.saveFailed", { message: localizedError(e, t) }));
+        refetchSettings();
       })
       .finally(() => setSaving(false));
   };
 
   const toggleOpsec = (v: boolean) => {
+    if (!ensureSettingsLoaded()) return;
     setOpsecEnabled(v);
     setSaving(true);
     api
       .setSettings({ opsec_enabled: v })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(v ? t("settings.opsecEnabled") : t("settings.opsecDisabled"));
       })
       .catch((e) => {
-        setOpsecEnabled(!v);
         toast.error(t("settings.saveFailed", { message: localizedError(e, t) }));
+        refetchSettings();
       })
       .finally(() => setSaving(false));
   };
@@ -385,90 +427,100 @@ export default function SystemSettingsPage() {
   ] as const;
 
   const toggleInjectPlanner = (v: boolean) => {
+    if (!ensureSettingsLoaded()) return;
     setInjectPlanner(v); // optimistic
     api
       .setSettings({ constraints_inject_planner: v })
-      .then(apply)
-      .catch(() => setInjectPlanner(!v)); // revert on failure
+      .then(applySaved)
+      .catch((e) => {
+        toast.error(t("settings.saveFailedPrefix") + localizedError(e, t));
+        refetchSettings();
+      });
   };
 
   const toggleAgentTrafficBinding = (v: boolean) => {
+    if (!ensureSettingsLoaded()) return;
     setAgentTrafficBinding(v);
     setSaving(true);
     api
       .setSettings({ agent_traffic_binding: v })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(v ? t("settings.trafficBindingEnabled") : t("settings.trafficBindingDisabled"));
       })
       .catch((e) => {
-        setAgentTrafficBinding(!v);
         toast.error(t("settings.saveFailed", { message: localizedError(e, t) }));
+        refetchSettings();
       })
       .finally(() => setSaving(false));
   };
 
   const toggleInjectWorker = (v: boolean) => {
+    if (!ensureSettingsLoaded()) return;
     setInjectWorker(v); // optimistic
     api
       .setSettings({ constraints_inject_worker: v })
-      .then(apply)
-      .catch(() => setInjectWorker(!v)); // revert on failure
+      .then(applySaved)
+      .catch((e) => {
+        toast.error(t("settings.saveFailedPrefix") + localizedError(e, t));
+        refetchSettings();
+      });
   };
 
   const toggleNoaCompaction = (v: boolean) => {
+    if (!ensureSettingsLoaded()) return;
     setNoaCompaction(v); // optimistic
     api
       .setSettings({ noa_compaction: v })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(v ? t("settings.noaEnabled") : t("settings.noaDisabled"));
       })
       .catch((e) => {
-        setNoaCompaction(!v); // revert on failure
         toast.error(t("settings.saveFailed", { message: localizedError(e, t) }));
+        refetchSettings();
       });
   };
 
   const toggleAutoTitle = (key: "task_auto_title_enabled" | "chat_auto_title_enabled", value: boolean) => {
+    if (!ensureSettingsLoaded()) return;
     const setter = key === "task_auto_title_enabled" ? setTaskAutoTitleEnabled : setChatAutoTitleEnabled;
     const patch: Partial<Settings> =
       key === "task_auto_title_enabled" ? { task_auto_title_enabled: value } : { chat_auto_title_enabled: value };
     setter(value);
     api
       .setSettings(patch)
-      .then(apply)
+      .then(applySaved)
       .catch((e) => {
-        setter(!value);
         toast.error(t("settings.saveFailedPrefix") + localizedError(e, t));
+        refetchSettings();
       });
   };
 
   // Persist a web-search patch (enable and/or backend). Optimistic with refetch.
   const saveWebSearch = (patch: Partial<Settings>) => {
+    if (!ensureSettingsLoaded()) return;
     setSaving(true);
     api
       .setSettings(patch)
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(t("settings.webSearchSaved"));
       })
       .catch((e) => {
         toast.error(t("settings.saveFailedPrefix") + localizedError(e, t));
-        api
-          .settings()
-          .then(apply)
-          .catch(() => undefined);
+        refetchSettings();
       })
       .finally(() => setSaving(false));
   };
 
   const saveBraveKey = () => {
+    if (!ensureSettingsLoaded()) return;
     setSavingKey(true);
     api
       .setSettings({ brave_search_api_key: braveKeyInput })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         setBraveKeyInput("");
         toast.success(t("settings.braveKeySaved"));
       })
@@ -477,11 +529,12 @@ export default function SystemSettingsPage() {
   };
 
   const saveTavilyKey = () => {
+    if (!ensureSettingsLoaded()) return;
     setSavingTavilyKey(true);
     api
       .setSettings({ tavily_search_api_key: tavilyKeyInput })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         setTavilyKeyInput("");
         toast.success(t("settings.tavilyKeySaved"));
       })
@@ -490,11 +543,12 @@ export default function SystemSettingsPage() {
   };
 
   const saveDeepSeekKey = () => {
+    if (!ensureSettingsLoaded()) return;
     setSavingDeepSeekKey(true);
     api
       .setSettings({ deepseek_search_api_key: deepSeekKeyInput })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         setDeepSeekKeyInput("");
         toast.success(t("settings.deepSeekKeySaved"));
       })
@@ -503,11 +557,12 @@ export default function SystemSettingsPage() {
   };
 
   const saveProxy = () => {
+    if (!ensureSettingsLoaded()) return;
     setSavingProxy(true);
     api
       .setSettings({ web_search_proxy: proxyInput.trim() })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(proxyInput.trim() ? t("settings.searchProxySaved") : t("settings.searchProxyCleared"));
       })
       .catch((e) => toast.error(t("settings.saveFailedPrefix") + localizedError(e, t)))
@@ -515,6 +570,7 @@ export default function SystemSettingsPage() {
   };
 
   const saveGlobalProxy = () => {
+    if (!ensureSettingsLoaded()) return;
     if (proxyPool.length > 0) {
       toast.info(t("settings.poolOverridesProxy"));
       return;
@@ -523,7 +579,7 @@ export default function SystemSettingsPage() {
     api
       .setSettings({ global_proxy: globalProxyInput.trim() })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         // 保存后链路变了，旧结果（尤其"尚未保存"）立刻失效。
         clearEgressReport();
         if (showEgressIp) void probeEgress().catch(() => undefined);
@@ -569,6 +625,7 @@ export default function SystemSettingsPage() {
       .catch((e) => toast.error(t("settings.importFailedPrefix") + localizedError(e, t)));
   };
   const saveProxyPoolStrategy = () => {
+    if (!ensureSettingsLoaded()) return;
     const interval = Number(proxyPoolInterval);
     if (!Number.isFinite(interval) || !Number.isInteger(interval) || interval < 3) {
       toast.error(t("settings.invalidRotationInterval"));
@@ -585,7 +642,7 @@ export default function SystemSettingsPage() {
         proxy_health_check_interval_seconds: Number(proxyPoolHealthInterval),
       })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(t("settings.rotationSaved"));
       })
       .catch((e) => toast.error(t("settings.saveFailedPrefix") + localizedError(e, t)));
@@ -628,23 +685,26 @@ export default function SystemSettingsPage() {
       .catch((e) => toast.error(t("settings.deleteFailedPrefix") + localizedError(e, t)));
 
   const saveProxyReconnect = () => {
+    if (!ensureSettingsLoaded()) return;
     api
       .setSettings({
         proxy_reconnect_max_attempts: Number(proxyReconnectMax),
         proxy_reconnect_interval_seconds: Number(proxyReconnectInterval),
       })
       .then((s) => {
-        apply(s);
+        applySaved(s);
         toast.success(t("settings.reconnectSaved"));
       })
       .catch((e) => toast.error(t("settings.saveFailedPrefix") + localizedError(e, t)));
   };
 
   const saveEgressProbeUrl = async () => {
+    if (!ensureSettingsLoaded()) return;
     setSavingEgressProbeUrl(true);
     try {
       const settings = await api.setSettings({ egress_probe_url: egressProbeUrl.trim() });
       setEgressProbeUrl(settings.egress_probe_url ?? "");
+      if (settings.runtime_warning) toast.warning(settings.runtime_warning);
       clearEgressReport();
       toast.success(settings.egress_probe_url ? t("settings.probeServiceSaved") : t("settings.probeServiceReset"));
       if (showEgressIp) void probeEgress().catch(() => undefined);
@@ -725,12 +785,14 @@ export default function SystemSettingsPage() {
   const braveNeedsKey = webSearch && backend === "brave-free" && !braveKeySet;
 
   const saveCredentialOptions = async (patch: Partial<Settings>) => {
+    if (!ensureSettingsLoaded()) return;
     setSavingCredentials(true);
     try {
       const s = await api.setSettings(patch);
       setCredentialAgent(!!s.credential_agent_enabled);
       setCredentialBinding(!!s.credential_traffic_binding);
       setIntelligenceEnabled(!!s.task_intelligence_enabled);
+      if (s.runtime_warning) toast.warning(s.runtime_warning);
       toast.success(t("settings.credentialsSaved"));
     } catch (e) {
       toast.error(t("settings.saveFailedPrefix") + localizedError(e, t));
@@ -754,6 +816,18 @@ export default function SystemSettingsPage() {
           />
         </div>
       </div>
+
+      {loaded && !settingsLoaded ? (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm"
+        >
+          <span className="text-destructive">{t("settings.loadFailedBanner")}</span>
+          <Button type="button" size="sm" variant="outline" onClick={loadSettings}>
+            {t("settings.reload")}
+          </Button>
+        </div>
+      ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row lg:items-start">
         <aside className="shrink-0 lg:sticky lg:top-4 lg:w-64">
@@ -815,9 +889,22 @@ export default function SystemSettingsPage() {
           </div>
 
           <div className="flex flex-col divide-y rounded-xl border bg-card/30 px-3 [&>[data-slot=card]]:mb-0 [&>[data-slot=card]]:rounded-none [&>[data-slot=card]]:bg-transparent [&>[data-slot=card]]:py-4 [&>[data-slot=card]]:ring-0">
-            {isSettingVisible("system", "settings.keywords.update") ? <UpdateCard /> : null}
-            {isSettingVisible("system", "settings.keywords.basicAuth") ? <BasicAuthCard /> : null}
-            {isSettingVisible("system", "settings.keywords.mcpServer") ? <McpServerCard /> : null}
+            {/* 搜索时只隐藏、不卸载：卸载会丢掉这三张卡里未保存的输入。 */}
+            <div
+              className={`${isSettingVisible("system", "settings.keywords.update") ? "" : "hidden"} [&>[data-slot=card]]:mb-0 [&>[data-slot=card]]:rounded-none [&>[data-slot=card]]:bg-transparent [&>[data-slot=card]]:py-4 [&>[data-slot=card]]:ring-0`}
+            >
+              <UpdateCard />
+            </div>
+            <div
+              className={`${isSettingVisible("system", "settings.keywords.basicAuth") ? "" : "hidden"} [&>[data-slot=card]]:mb-0 [&>[data-slot=card]]:rounded-none [&>[data-slot=card]]:bg-transparent [&>[data-slot=card]]:py-4 [&>[data-slot=card]]:ring-0`}
+            >
+              <BasicAuthCard />
+            </div>
+            <div
+              className={`${isSettingVisible("system", "settings.keywords.mcpServer") ? "" : "hidden"} [&>[data-slot=card]]:mb-0 [&>[data-slot=card]]:rounded-none [&>[data-slot=card]]:bg-transparent [&>[data-slot=card]]:py-4 [&>[data-slot=card]]:ring-0`}
+            >
+              <McpServerCard />
+            </div>
 
             <Card
               className={`${isSettingVisible("traffic", "settings.keywords.trafficCapture") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
@@ -845,7 +932,7 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="traffic-capture"
                     checked={trafficCapture}
-                    disabled={!loaded || saving}
+                    disabled={!loaded || !settingsLoaded || saving}
                     onCheckedChange={toggleTraffic}
                   />
                 </div>
@@ -903,7 +990,7 @@ export default function SystemSettingsPage() {
                   id="agent-traffic-binding"
                   aria-describedby="agent-traffic-binding-description"
                   checked={agentTrafficBinding}
-                  disabled={!loaded || saving}
+                  disabled={!loaded || !settingsLoaded || saving}
                   onCheckedChange={toggleAgentTrafficBinding}
                 />
               </CardContent>
@@ -930,7 +1017,7 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="browser-screenshot"
                     checked={browserScreenshot}
-                    disabled={!loaded || saving}
+                    disabled={!loaded || !settingsLoaded || saving}
                     onCheckedChange={toggleBrowserScreenshot}
                   />
                 </div>
@@ -944,7 +1031,7 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="browser-screenshot-timestamp"
                     checked={browserScreenshotTimestamp}
-                    disabled={!loaded || saving}
+                    disabled={!loaded || !settingsLoaded || saving}
                     onCheckedChange={toggleBrowserScreenshotTimestamp}
                   />
                 </div>
@@ -958,7 +1045,7 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="opsec-enabled"
                     checked={opsecEnabled}
-                    disabled={!loaded || saving}
+                    disabled={!loaded || !settingsLoaded || saving}
                     onCheckedChange={toggleOpsec}
                   />
                 </div>
@@ -987,14 +1074,18 @@ export default function SystemSettingsPage() {
                       autoComplete="off"
                       placeholder={t("settings.globalProxyPlaceholder")}
                       value={globalProxyInput}
-                      disabled={!loaded || savingGlobalProxy}
+                      disabled={!loaded || !settingsLoaded || savingGlobalProxy}
                       onChange={(e) => {
                         setGlobalProxyInput(e.target.value);
                         // 旧结果对应的是上一次的地址，留着会让人以为新值已经测过。
                         clearEgressReport();
                       }}
                     />
-                    <Button type="button" onClick={saveGlobalProxy} disabled={!loaded || savingGlobalProxy}>
+                    <Button
+                      type="button"
+                      onClick={saveGlobalProxy}
+                      disabled={!loaded || !settingsLoaded || savingGlobalProxy}
+                    >
                       {t("settings.save")}
                     </Button>
                     {/* 测表单里当前的值，不要求先保存。 */}
@@ -1041,7 +1132,13 @@ export default function SystemSettingsPage() {
                           onChange={(e) => setProxyReconnectInterval(e.target.value)}
                         />
                       </div>
-                      <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={saveProxyReconnect}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full sm:w-auto"
+                        onClick={saveProxyReconnect}
+                        disabled={!loaded || !settingsLoaded}
+                      >
                         {t("settings.savePolicy")}
                       </Button>
                     </div>
@@ -1207,7 +1304,12 @@ export default function SystemSettingsPage() {
                       onChange={(e) => setProxyPoolText(e.target.value)}
                     />
                     <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <Button type="button" size="sm" onClick={importProxyPool} disabled={!proxyPoolText.trim()}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={importProxyPool}
+                        disabled={!loaded || !settingsLoaded || !proxyPoolText.trim()}
+                      >
                         {t("settings.import")}
                       </Button>
                       <span className="text-muted-foreground">{t("settings.proxyCredentialsHidden")}</span>
@@ -1377,6 +1479,7 @@ export default function SystemSettingsPage() {
                           variant="outline"
                           className="w-full sm:w-auto"
                           onClick={saveProxyPoolStrategy}
+                          disabled={!loaded || !settingsLoaded}
                         >
                           {t("settings.saveRotation")}
                         </Button>
@@ -1434,7 +1537,7 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="inject-planner"
                     checked={injectPlanner}
-                    disabled={!loaded}
+                    disabled={!loaded || !settingsLoaded}
                     onCheckedChange={toggleInjectPlanner}
                   />
                 </div>
@@ -1446,7 +1549,7 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="inject-worker"
                     checked={injectWorker}
-                    disabled={!loaded}
+                    disabled={!loaded || !settingsLoaded}
                     onCheckedChange={toggleInjectWorker}
                   />
                 </div>
@@ -1478,7 +1581,7 @@ export default function SystemSettingsPage() {
                 <Switch
                   id="noa-compaction"
                   checked={noaCompaction}
-                  disabled={!loaded}
+                  disabled={!loaded || !settingsLoaded}
                   onCheckedChange={toggleNoaCompaction}
                 />
               </CardContent>
@@ -1500,7 +1603,7 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="task-auto-title"
                     checked={taskAutoTitleEnabled}
-                    disabled={!loaded}
+                    disabled={!loaded || !settingsLoaded}
                     onCheckedChange={(value) => toggleAutoTitle("task_auto_title_enabled", value)}
                   />
                 </Field>
@@ -1512,7 +1615,7 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="chat-auto-title"
                     checked={chatAutoTitleEnabled}
-                    disabled={!loaded}
+                    disabled={!loaded || !settingsLoaded}
                     onCheckedChange={(value) => toggleAutoTitle("chat_auto_title_enabled", value)}
                   />
                 </Field>
@@ -1535,14 +1638,16 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="task-intelligence"
                     checked={intelligenceEnabled}
-                    disabled={!loaded || savingIntelligence || savingCredentials}
+                    disabled={!loaded || !settingsLoaded || savingIntelligence || savingCredentials}
                     onCheckedChange={async (value) => {
+                      if (!ensureSettingsLoaded()) return;
                       setSavingIntelligence(true);
                       try {
                         const settings = await api.setSettings({ task_intelligence_enabled: value });
                         setIntelligenceEnabled(!!settings.task_intelligence_enabled);
                         setCredentialAgent(!!settings.credential_agent_enabled);
                         setCredentialBinding(!!settings.credential_traffic_binding);
+                        if (settings.runtime_warning) toast.warning(settings.runtime_warning);
                         toast.success(value ? t("settings.autoRecordEnabled") : t("settings.autoRecordDisabled"));
                       } catch (error) {
                         toast.error(t("settings.saveFailedPrefix") + localizedError(error, t));
@@ -1560,7 +1665,9 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="credential-agent"
                     checked={credentialAgent}
-                    disabled={!loaded || savingCredentials || savingIntelligence || !intelligenceEnabled}
+                    disabled={
+                      !loaded || !settingsLoaded || savingCredentials || savingIntelligence || !intelligenceEnabled
+                    }
                     onCheckedChange={(value) => void saveCredentialOptions({ credential_agent_enabled: value })}
                   />
                 </Field>
@@ -1573,7 +1680,7 @@ export default function SystemSettingsPage() {
                     <Switch
                       id="credential-traffic"
                       checked={credentialBinding}
-                      disabled={!loaded || savingCredentials}
+                      disabled={!loaded || !settingsLoaded || savingCredentials}
                       onCheckedChange={(value) => void saveCredentialOptions({ credential_traffic_binding: value })}
                     />
                   </Field>
@@ -1603,7 +1710,7 @@ export default function SystemSettingsPage() {
                   <Switch
                     id="web-search"
                     checked={webSearch}
-                    disabled={!loaded || saving}
+                    disabled={!loaded || !settingsLoaded || saving}
                     onCheckedChange={(v) => {
                       setWebSearch(v); // optimistic
                       saveWebSearch({ web_search_enabled: v });
@@ -1616,7 +1723,7 @@ export default function SystemSettingsPage() {
                     <Label className="text-sm font-normal text-muted-foreground">{t("settings.searchProvider")}</Label>
                     <Select
                       value={backend}
-                      disabled={!loaded || saving}
+                      disabled={!loaded || !settingsLoaded || saving}
                       onValueChange={(v) => {
                         setBackend(v); // optimistic
                         saveWebSearch({ web_search_backend: v });
@@ -1648,13 +1755,13 @@ export default function SystemSettingsPage() {
                           deepSeekKeySet ? t("settings.keyConfiguredPlaceholder") : "DeepSeek Search API Key"
                         }
                         value={deepSeekKeyInput}
-                        disabled={!loaded || savingDeepSeekKey}
+                        disabled={!loaded || !settingsLoaded || savingDeepSeekKey}
                         onChange={(e) => setDeepSeekKeyInput(e.target.value)}
                       />
                       <Button
                         type="button"
                         onClick={saveDeepSeekKey}
-                        disabled={!loaded || savingDeepSeekKey || deepSeekKeyInput.trim() === ""}
+                        disabled={!loaded || !settingsLoaded || savingDeepSeekKey || deepSeekKeyInput.trim() === ""}
                       >
                         {t("settings.save")}
                       </Button>
@@ -1678,13 +1785,13 @@ export default function SystemSettingsPage() {
                           braveKeySet ? t("settings.keyConfiguredPlaceholder") : t("settings.braveKeyPlaceholder")
                         }
                         value={braveKeyInput}
-                        disabled={!loaded || savingKey}
+                        disabled={!loaded || !settingsLoaded || savingKey}
                         onChange={(e) => setBraveKeyInput(e.target.value)}
                       />
                       <Button
                         type="button"
                         onClick={saveBraveKey}
-                        disabled={!loaded || savingKey || braveKeyInput.trim() === ""}
+                        disabled={!loaded || !settingsLoaded || savingKey || braveKeyInput.trim() === ""}
                       >
                         {t("settings.save")}
                       </Button>
@@ -1711,13 +1818,13 @@ export default function SystemSettingsPage() {
                           tavilyKeySet ? t("settings.keyConfiguredPlaceholder") : t("settings.tavilyKeyPlaceholder")
                         }
                         value={tavilyKeyInput}
-                        disabled={!loaded || savingTavilyKey}
+                        disabled={!loaded || !settingsLoaded || savingTavilyKey}
                         onChange={(e) => setTavilyKeyInput(e.target.value)}
                       />
                       <Button
                         type="button"
                         onClick={saveTavilyKey}
-                        disabled={!loaded || savingTavilyKey || tavilyKeyInput.trim() === ""}
+                        disabled={!loaded || !settingsLoaded || savingTavilyKey || tavilyKeyInput.trim() === ""}
                       >
                         {t("settings.save")}
                       </Button>
@@ -1740,10 +1847,10 @@ export default function SystemSettingsPage() {
                         autoComplete="off"
                         placeholder={t("settings.proxyPlaceholder")}
                         value={proxyInput}
-                        disabled={!loaded || savingProxy}
+                        disabled={!loaded || !settingsLoaded || savingProxy}
                         onChange={(e) => setProxyInput(e.target.value)}
                       />
-                      <Button type="button" onClick={saveProxy} disabled={!loaded || savingProxy}>
+                      <Button type="button" onClick={saveProxy} disabled={!loaded || !settingsLoaded || savingProxy}>
                         {t("settings.save")}
                       </Button>
                     </div>
@@ -1788,13 +1895,13 @@ export default function SystemSettingsPage() {
                     className="font-mono text-sm"
                     placeholder={t("settings.pythonPlaceholder")}
                     value={pyInterp}
-                    disabled={!loaded || saving}
+                    disabled={!loaded || !settingsLoaded || saving}
                     onChange={(e) => setPyInterp(e.target.value)}
                   />
-                  <Button variant="outline" onClick={detectPython} disabled={!loaded || saving}>
+                  <Button variant="outline" onClick={detectPython} disabled={!loaded || !settingsLoaded || saving}>
                     {t("settings.detectAgain")}
                   </Button>
-                  <Button onClick={savePython} disabled={!loaded || saving}>
+                  <Button onClick={savePython} disabled={!loaded || !settingsLoaded || saving}>
                     {t("settings.save")}
                   </Button>
                 </div>

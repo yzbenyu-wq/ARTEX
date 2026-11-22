@@ -1047,6 +1047,9 @@ export interface Settings {
   // worker/主 agent/对话)由 noa 接管上下文压缩,取代内置 compaction;每 run 读一次,对
   // 之后启动的 run 生效。
   noa_compaction?: boolean;
+  // 仅出现在 PUT /api/settings 的响应里：配置已落库，但运行时（Agent）重建失败。
+  // 前端应保留新值并提示用户，而不是当成保存失败回滚。
+  runtime_warning?: string;
   // ---- 漏洞 IM 推送（渠道本身是独立资源，见 /api/notify/*，这里只有三项全局配置）----
   notify_enabled?: boolean; // 推送总开关，默认开；用于维护期一键止血
   notify_public_base_url?: string; // 漏洞详情回链的外部访问地址；空=消息不带回链

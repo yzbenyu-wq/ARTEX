@@ -4360,8 +4360,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		s.cfgMu.Unlock()
 		if on {
 			if err := s.applyLLM(cfg); err != nil {
-				// 配置已经提交成功，重建失败时如实说清楚，避免让用户以为没保存。
-				writeErr(w, 500, "配置已保存，但 Agent 重建失败，请稍后重试："+err.Error())
+				// 配置已经提交成功：返回 500 会让客户端误判为"未保存"并回滚本地状态，
+				// 实际服务器已是新值。用 runtime_warning 如实说明，保存结果仍按成功返回。
+				log.Printf("[settings] 配置已保存，但 Agent 重建失败：%v", err)
+				payload := s.settingsPayload()
+				payload["runtime_warning"] = "配置已保存，但 Agent 重建失败，请稍后重试：" + err.Error()
+				writeJSON(w, 200, payload)
 				return
 			}
 		}

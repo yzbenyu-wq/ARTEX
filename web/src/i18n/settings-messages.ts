@@ -27,6 +27,10 @@ export const settingsMessages = {
     "设置加载失败，Worker 配置已锁定，避免覆盖服务器上的模型池",
     "Settings could not be loaded. Worker configuration is locked to protect the model pools on the server.",
   ],
+  "settings.loadFailedBanner": [
+    "设置加载失败，保存已禁用，避免用空值覆盖服务器配置",
+    "Settings failed to load. Saving is disabled to avoid overwriting the server configuration with empty values.",
+  ],
   "settings.screenshotsEnabled": ["已开启浏览器截图工具", "Browser screenshot tool enabled"],
   "settings.screenshotsDisabled": ["已关闭浏览器截图工具", "Browser screenshot tool disabled"],
   "settings.timestampsEnabled": ["已开启截图时间标记", "Screenshot timestamps enabled"],
