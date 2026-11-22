@@ -525,6 +525,19 @@ func (d *DB) GetAgentByKey(key string) (*Agent, error) {
 	return a, nil
 }
 
+// GetAgentByKeyTx is the transactional form of GetAgentByKey, for callers that
+// must read the same snapshot they are about to write.
+func GetAgentByKeyTx(ctx context.Context, tx *sql.Tx, key string) (*Agent, error) {
+	a, err := scanAgent(tx.QueryRowContext(ctx, `SELECT `+agentCols+` FROM agents WHERE key=$1`, key))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
 // AgentBindingCounts returns per-agent binding counts in a few grouped queries
 // (NO N+1): visible MCP servers and skills keyed by agent id, and bound tools
 // keyed by agent key (tools.agents is a JSONB array of agent keys). Missing keys
@@ -846,6 +859,19 @@ type MCPServer struct {
 	Enabled   bool            `json:"enabled"`
 	Insecure  bool            `json:"insecure"`        // http: skip TLS cert verification (self-signed servers, issue #108)
 	Tools     []string        `json:"tools,omitempty"` // cached tool names (mcp_tools_cache)
+}
+
+// MCPIDByNameTx resolves one MCP server's id by name inside an existing
+// transaction. found=false means the server does not exist (e.g. deleted).
+func MCPIDByNameTx(ctx context.Context, tx *sql.Tx, name string) (id int64, found bool, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT id FROM mcp_servers WHERE name=$1`, name).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
 }
 
 func (d *DB) ListMCP() ([]*MCPServer, error) {

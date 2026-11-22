@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -10,6 +12,10 @@ import (
 )
 
 const updateSettingsKey = "update.network"
+
+// errUpdateSettingsCorrupt marks a stored value the form may overwrite; a DB
+// read failure is a different error and must surface as 500.
+var errUpdateSettingsCorrupt = errors.New("更新网络设置格式无效")
 
 type updateSettings struct {
 	Proxy string `json:"proxy"`
@@ -31,17 +37,33 @@ func (s *Server) loadUpdateSettings() (updateSettings, error) {
 	}
 	if ok {
 		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-			return cfg, fmt.Errorf("更新网络设置格式无效")
+			return cfg, errUpdateSettingsCorrupt
 		}
 	}
 	if err := cfg.validate(); err != nil {
-		return cfg, err
+		return cfg, fmt.Errorf("%w: %v", errUpdateSettingsCorrupt, err)
 	}
 	return cfg, nil
 }
 
-func (s *Server) getUpdateSettings(w http.ResponseWriter, r *http.Request) {
+// loadUpdateSettingsTolerant treats a corrupt stored value as "not configured"
+// so the administrator can replace it from the UI. Only a read failure is an
+// error — the raw row is still readable-but-garbage, not missing.
+func (s *Server) loadUpdateSettingsTolerant() (updateSettings, error) {
 	cfg, err := s.loadUpdateSettings()
+	if err == nil {
+		return cfg, nil
+	}
+	if !errors.Is(err, errUpdateSettingsCorrupt) {
+		return cfg, err
+	}
+	// 配置损坏或凭据无法解析：按空值展示，保存时用新值覆盖。
+	log.Printf("[update] 已保存的更新网络设置无效，按空值处理：%v", err)
+	return updateSettings{}, nil
+}
+
+func (s *Server) getUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.loadUpdateSettingsTolerant()
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -64,7 +86,7 @@ func (s *Server) putUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "更新网络设置格式无效")
 		return
 	}
-	saved, err := s.loadUpdateSettings()
+	saved, err := s.loadUpdateSettingsTolerant()
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return

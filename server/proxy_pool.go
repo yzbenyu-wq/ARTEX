@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -288,6 +289,50 @@ func (m *Manager) proxyPoolEntries() []proxyPoolEntry {
 	m.proxyPool.mu.Lock()
 	defer m.proxyPool.mu.Unlock()
 	return append([]proxyPoolEntry(nil), m.proxyPool.entries...)
+}
+
+// proxyPoolUndo is the state an update/delete reverts to when a later step
+// fails, so memory and the derived settings rows never drift apart.
+type proxyPoolUndo struct {
+	entries    []proxyPoolEntry
+	active     string
+	global     string
+	configured bool
+}
+
+// snapshotProxyPoolLocked captures the undo state; call with proxyPool.mu held.
+func (m *Manager) snapshotProxyPoolLocked() proxyPoolUndo {
+	u := proxyPoolUndo{
+		entries:    append([]proxyPoolEntry(nil), m.proxyPool.entries...),
+		active:     m.proxyPool.active,
+		configured: m.proxyPoolConfigured.Load(),
+	}
+	m.mu.RLock()
+	u.global = m.globalProxy
+	m.mu.RUnlock()
+	return u
+}
+
+// restoreProxyPoolLocked rewinds memory and rewrites the derived rows a failed
+// attempt may already have touched (active id, egress proxy, pool JSON).
+// Call with proxyPool.mu held.
+func (m *Manager) restoreProxyPoolLocked(u proxyPoolUndo) {
+	m.proxyPool.entries, m.proxyPool.active = u.entries, u.active
+	m.proxyPoolConfigured.Store(u.configured)
+	m.mu.Lock()
+	m.globalProxy = u.global
+	m.mu.Unlock()
+	if m.traffic != nil {
+		_ = m.traffic.SetUpstreamProxy(u.global)
+	}
+	if m.pg != nil {
+		_ = m.pg.SetSetting(settingGlobalProxy, u.global)
+		_ = m.pg.SetSetting(settingProxyPoolActive, u.active)
+		if err := m.persistProxyPoolLocked(); err != nil {
+			log.Printf("[proxy] 代理池回滚落盘失败: %v", err)
+		}
+	}
+	m.syncBrowserMCPProxy()
 }
 
 func (m *Manager) setProxyPoolEntries(entries []proxyPoolEntry, active string) error {
@@ -989,12 +1034,12 @@ func (s *Server) updateProxyPool(w http.ResponseWriter, r *http.Request) {
 	recoverPaused := false
 	proxyGuards := s.snapshotProxyReconnectGuards(false)
 	s.m.proxyPool.mu.Lock()
+	undo := s.m.snapshotProxyPoolLocked()
 	for i := range s.m.proxyPool.entries {
 		e := &s.m.proxyPool.entries[i]
 		if e.ID != id {
 			continue
 		}
-		oldEntry := *e
 		oldRaw := e.RawURL
 		if req.URL != nil {
 			raw, err := mergeMaskedProxyURL(*req.URL, oldRaw)
@@ -1028,7 +1073,7 @@ func (s *Server) updateProxyPool(w http.ResponseWriter, r *http.Request) {
 			if req.URL != nil || req.Enabled != nil {
 				if e.Enabled && e.RawURL != "" {
 					if err := s.m.applyActiveProxyLockedWithHealth(id, "manual", req.URL != nil); err != nil {
-						*e = oldEntry
+						s.m.restoreProxyPoolLocked(undo)
 						s.m.proxyPool.mu.Unlock()
 						writeErr(w, 400, maskSecrets(err.Error()))
 						return
@@ -1045,6 +1090,7 @@ func (s *Server) updateProxyPool(w http.ResponseWriter, r *http.Request) {
 						// Fall through to the enabled-member fallback below.
 					} else {
 						if err := s.m.applyActiveProxyLocked(next, "manual"); err != nil {
+							s.m.restoreProxyPoolLocked(undo)
 							s.m.proxyPool.mu.Unlock()
 							writeErr(w, 400, maskSecrets(err.Error()))
 							return
@@ -1067,6 +1113,7 @@ func (s *Server) updateProxyPool(w http.ResponseWriter, r *http.Request) {
 					}
 					if next != "" {
 						if err := s.m.applyActiveProxyLockedWithHealth(next, "manual", true); err != nil {
+							s.m.restoreProxyPoolLocked(undo)
 							s.m.proxyPool.mu.Unlock()
 							writeErr(w, 400, maskSecrets(err.Error()))
 							return
@@ -1074,6 +1121,7 @@ func (s *Server) updateProxyPool(w http.ResponseWriter, r *http.Request) {
 						needPause = true
 					} else {
 						if err := s.m.applyActiveProxyLocked("", "manual"); err != nil {
+							s.m.restoreProxyPoolLocked(undo)
 							s.m.proxyPool.mu.Unlock()
 							writeErr(w, 400, maskSecrets(err.Error()))
 							return
@@ -1085,6 +1133,7 @@ func (s *Server) updateProxyPool(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := s.m.persistProxyPoolLocked(); err != nil {
+			s.m.restoreProxyPoolLocked(undo)
 			s.m.proxyPool.mu.Unlock()
 			writeErr(w, 500, err.Error())
 			return
@@ -1122,6 +1171,7 @@ func (s *Server) deleteProxyPool(w http.ResponseWriter, r *http.Request) {
 	recoverPaused := false
 	proxyGuards := s.snapshotProxyReconnectGuards(false)
 	s.m.proxyPool.mu.Lock()
+	undo := s.m.snapshotProxyPoolLocked()
 	found := false
 	out := s.m.proxyPool.entries[:0]
 	for _, e := range s.m.proxyPool.entries {
@@ -1141,6 +1191,7 @@ func (s *Server) deleteProxyPool(w http.ResponseWriter, r *http.Request) {
 	if s.m.proxyPool.active == id {
 		if next := s.m.selectHealthyLocked(id); next != "" {
 			if err := s.m.applyActiveProxyLocked(next, "manual"); err != nil {
+				s.m.restoreProxyPoolLocked(undo)
 				s.m.proxyPool.mu.Unlock()
 				writeErr(w, 500, maskSecrets(err.Error()))
 				return
@@ -1158,6 +1209,7 @@ func (s *Server) deleteProxyPool(w http.ResponseWriter, r *http.Request) {
 			}
 			if next != "" {
 				if err := s.m.applyActiveProxyLockedWithHealth(next, "manual", true); err != nil {
+					s.m.restoreProxyPoolLocked(undo)
 					s.m.proxyPool.mu.Unlock()
 					writeErr(w, 500, maskSecrets(err.Error()))
 					return
@@ -1165,6 +1217,7 @@ func (s *Server) deleteProxyPool(w http.ResponseWriter, r *http.Request) {
 				needPause = true
 			} else {
 				if err := s.m.applyActiveProxyLocked("", "manual"); err != nil {
+					s.m.restoreProxyPoolLocked(undo)
 					s.m.proxyPool.mu.Unlock()
 					writeErr(w, 500, maskSecrets(err.Error()))
 					return
@@ -1185,6 +1238,7 @@ func (s *Server) deleteProxyPool(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.m.persistProxyPoolLocked(); err != nil {
+		s.m.restoreProxyPoolLocked(undo)
 		s.m.proxyPool.mu.Unlock()
 		writeErr(w, 500, err.Error())
 		return

@@ -21,6 +21,19 @@ func (d *DB) GetSetting(key string) (value string, ok bool, err error) {
 	return value, true, nil
 }
 
+// GetSettingTx returns the stored value inside an existing transaction, so a
+// caller can compute a derived write from the same snapshot it commits.
+func GetSettingTx(ctx context.Context, tx *sql.Tx, key string) (value string, ok bool, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
 // SetSetting upserts a setting value.
 func (d *DB) SetSetting(key, value string) error {
 	return d.SetSettingContext(context.Background(), key, value)

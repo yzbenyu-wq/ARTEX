@@ -14,6 +14,16 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
@@ -70,6 +80,8 @@ export default function SystemSettingsPage() {
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
   const [proxyPool, setProxyPool] = React.useState<ProxyPoolEntry[]>([]);
   const [proxyPoolActiveId, setProxyPoolActiveId] = React.useState("");
+  const [pendingPoolDelete, setPendingPoolDelete] = React.useState<string | null>(null);
+  const [deletingPoolEntry, setDeletingPoolEntry] = React.useState(false);
   const [proxyPoolText, setProxyPoolText] = React.useState("");
   const [proxyPoolTimed, setProxyPoolTimed] = React.useState(false);
   const [proxyPoolInterval, setProxyPoolInterval] = React.useState("30");
@@ -678,11 +690,13 @@ export default function SystemSettingsPage() {
       .updateProxyPool(entry.id, { enabled: !entry.enabled })
       .then(() => refreshProxyPool())
       .catch((e) => toast.error(t("settings.updateFailedPrefix") + localizedError(e, t)));
-  const deleteProxyPoolEntry = (id: string) =>
-    api
+  const deleteProxyPoolEntry = (id: string) => {
+    if (!ensureSettingsLoaded()) return Promise.resolve();
+    return api
       .deleteProxyPool(id)
       .then(() => refreshProxyPool())
       .catch((e) => toast.error(t("settings.deleteFailedPrefix") + localizedError(e, t)));
+  };
 
   const saveProxyReconnect = () => {
     if (!ensureSettingsLoaded()) return;
@@ -1387,7 +1401,8 @@ export default function SystemSettingsPage() {
                               type="button"
                               variant="ghost"
                               size="sm"
-                              onClick={() => deleteProxyPoolEntry(entry.id)}
+                              disabled={!loaded || !settingsLoaded}
+                              onClick={() => setPendingPoolDelete(entry.id)}
                             >
                               {t("settings.delete")}
                             </Button>
@@ -2072,6 +2087,35 @@ export default function SystemSettingsPage() {
           </div>
         </main>
       </div>
+      <AlertDialog
+        open={pendingPoolDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !deletingPoolEntry) setPendingPoolDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("settings.deleteProxyTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("settings.deleteProxyDesc")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingPoolEntry}>{t("settings.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deletingPoolEntry}
+              onClick={() => {
+                if (!pendingPoolDelete) return;
+                setDeletingPoolEntry(true);
+                void deleteProxyPoolEntry(pendingPoolDelete).finally(() => {
+                  setDeletingPoolEntry(false);
+                  setPendingPoolDelete(null);
+                });
+              }}
+            >
+              {t("settings.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

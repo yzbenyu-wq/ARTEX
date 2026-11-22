@@ -45,6 +45,10 @@ type basicAuthGate struct {
 	store  basicAuthSettingsStore
 }
 
+// load installs the stored configuration. A corrupt or incomplete row is
+// reported as an error but still publishes the store with the gate disabled:
+// the service stays up and the settings page can rewrite the row. DB read
+// failures leave both untouched, so saves fail closed with 503.
 func (g *basicAuthGate) load(store basicAuthSettingsStore) error {
 	g.saveMu.Lock()
 	defer g.saveMu.Unlock()
@@ -55,15 +59,23 @@ func (g *basicAuthGate) load(store basicAuthSettingsStore) error {
 	var cfg basicAuthConfig
 	if ok {
 		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			g.mu.Lock()
+			g.cfg, g.store = basicAuthConfig{}, store
+			g.mu.Unlock()
 			return fmt.Errorf("invalid HTTP Basic Auth configuration")
 		}
 	}
 	if cfg.Enabled {
-		if !validBasicUsername(cfg.Username) || cfg.Revision == "" {
-			return fmt.Errorf("incomplete HTTP Basic Auth configuration")
+		broken := !validBasicUsername(cfg.Username) || cfg.Revision == ""
+		if !broken {
+			_, err = bcrypt.Cost([]byte(cfg.PasswordHash))
+			broken = err != nil
 		}
-		if _, err := bcrypt.Cost([]byte(cfg.PasswordHash)); err != nil {
-			return fmt.Errorf("invalid HTTP Basic Auth password hash")
+		if broken {
+			g.mu.Lock()
+			g.cfg, g.store = basicAuthConfig{}, store
+			g.mu.Unlock()
+			return fmt.Errorf("incomplete HTTP Basic Auth configuration")
 		}
 	}
 	g.mu.Lock()

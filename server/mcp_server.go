@@ -398,9 +398,19 @@ func (s *Server) putMCPServerSettings(w http.ResponseWriter, r *http.Request) {
 	accessChanged := false
 	if req.AllowedIPs != nil || req.TrustedProxies != nil {
 		cfg, _, err := loadMCPAccess(pg)
-		if err != nil {
-			// A corrupt stored value must stay replaceable from the UI.
+		switch {
+		case err == nil:
+		case errors.Is(err, errMCPAccessCorrupt):
+			// A corrupt row cannot be merged: rebuilding from one field would
+			// silently clear the other (an empty allowlist means "allow any").
+			if req.AllowedIPs == nil || req.TrustedProxies == nil {
+				writeErr(w, 409, "已保存的来源白名单配置损坏，无法做部分更新；请同时提交 allowed_ips 与 trusted_proxies 以覆盖修复")
+				return
+			}
 			cfg = mcpAccessConfig{}
+		default:
+			writeErr(w, 503, "来源白名单读取失败: "+err.Error())
+			return
 		}
 		if req.AllowedIPs != nil {
 			cfg.AllowedIPs = *req.AllowedIPs

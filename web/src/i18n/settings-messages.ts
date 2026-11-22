@@ -81,6 +81,12 @@ export const settingsMessages = {
   "settings.probeFailedPrefix": ["探测失败：", "Probe failed: "],
   "settings.updateFailedPrefix": ["更新失败：", "Update failed: "],
   "settings.deleteFailedPrefix": ["删除失败：", "Could not delete: "],
+  "settings.deleteProxyTitle": ["删除这个代理？", "Delete this proxy?"],
+  "settings.deleteProxyDesc": [
+    "该代理会从代理池中移除；如果它是当前出口，流量会自动切到其余健康成员或改为直连。",
+    "The proxy is removed from the pool. If it is the active egress, traffic switches to a remaining healthy member or goes direct.",
+  ],
+  "settings.cancel": ["取消", "Cancel"],
   "settings.reconnectSaved": ["已保存代理重连策略", "Proxy reconnection settings saved"],
   "settings.probeServiceSaved": ["已保存 IP 探测服务", "IP probe service saved"],
   "settings.probeServiceReset": ["已恢复默认 IP 探测服务", "Default IP probe service restored"],

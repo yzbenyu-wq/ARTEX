@@ -77,6 +77,12 @@ type Server struct {
 	// free slots off the same snapshot and over-promote past the limit.
 	concMu sync.Mutex
 
+	// projectMCPMu serializes saves that project capture/egress state onto the
+	// browser MCP, so the projection is computed and committed against one
+	// settings snapshot at a time instead of a runtime mirror another save is
+	// still updating.
+	projectMCPMu sync.Mutex
+
 	cfgMu     sync.Mutex
 	chatAgent *agent.ChatAgent // conversational runner for the chat page; nil w/o LLM
 	// llmProv is the fully-decorated global provider (recorder + failover chain)
@@ -200,7 +206,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	s.initSideQuestions()
 	if m.pg != nil {
 		if err := s.basicAuth.load(m.pg); err != nil {
-			log.Fatalf("[auth] load HTTP Basic Auth: %v", err)
+			// A corrupt settings row must not take the whole service down (and
+			// lock the administrator out of the page that repairs it). The gate
+			// stays closed; the loud log names the row to fix.
+			log.Printf("[auth] HTTP Basic Auth 配置无效，已按关闭处理，请在系统设置中重新保存：%v", err)
 		}
 	}
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
@@ -4103,9 +4112,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.ConcurrencyLimit != nil {
 			limit = *req.ConcurrencyLimit
-		}
-		if limit < 1 {
-			limit = defaultConcurrencyLimit
+			if limit < 1 {
+				writeErr(w, 400, "task_concurrency_limit 必须是 ≥ 1 的整数")
+				return
+			}
 		}
 		writes[settingConcurrencyLimit] = strconv.Itoa(limit)
 		writes[settingConcurrencyOn] = strconv.FormatBool(on)
@@ -4177,25 +4187,23 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var globalProxyAfter *string // nil = legacy field unchanged
+	// Refuse instead of pretending to save: once a managed pool exists the pool
+	// API owns egress, and a silent 200 would make the caller believe this value
+	// took effect.
+	if hasGlobalProxy && len(s.m.proxyPoolEntries()) > 0 {
+		writeErr(w, 409, "已配置代理池，出口代理请通过代理池管理；global_proxy 已不再写入")
+		return
+	}
 	if hasGlobalProxy {
 		switch {
-		case len(s.m.proxyPoolEntries()) > 0:
-			// The legacy field is a read-only echo once a pool exists. Pool API
-			// operations are the sole authority for health, enablement and switching,
-			// so a managed pool is also never emptied from here.
 		case globalProxyMerged == "":
 			writes[settingGlobalProxy] = ""
 			apply.proxyChanged = true
-			cleared := ""
-			globalProxyAfter = &cleared
 			// Tasks paused waiting for egress resume once it is direct again.
 			apply.proxyGuards = s.snapshotProxyReconnectGuards(false)
 		case s.m.proxyPool == nil:
 			writes[settingGlobalProxy] = globalProxyMerged
 			apply.proxyChanged = true
-			merged := globalProxyMerged
-			globalProxyAfter = &merged
 		default:
 			// A legacy proxy becomes the pool's first entry, so the same three rows
 			// startup writes are persisted here rather than diverging later.
@@ -4209,32 +4217,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			apply.promoteProxy = globalProxyMerged
 			apply.proxyChanged = true
-			merged := globalProxyMerged
-			globalProxyAfter = &merged
 		}
 	}
-	// The browser MCP's proxy args are a projection of the capture/egress state,
-	// so compute them from the values this save commits and write them in the same
-	// transaction — the projection can never disagree with the saved config.
+	// The browser MCP's proxy args are a projection of the capture/egress state.
+	// They are computed and written inside the transaction below so they can
+	// never disagree with the settings rows that justified them.
 	projectMCP := req.TrafficCapture != nil || req.BrowserScreenshot != nil || apply.proxyChanged
-	mcpScreenshot := s.m.pg.GetBool(settingBrowserScreenshot, false)
-	if req.BrowserScreenshot != nil {
-		mcpScreenshot = *req.BrowserScreenshot
-	}
-	var mcpProxy, mcpCA string
-	if projectMCP {
-		captureAfter := s.m.TrafficEnabled()
-		if req.TrafficCapture != nil {
-			captureAfter = *req.TrafficCapture
-		}
-		globalAfterValue := s.m.GlobalProxy()
-		if globalProxyAfter != nil {
-			globalAfterValue = *globalProxyAfter
-		}
-		poolAfter := s.m.proxyPoolConfigured.Load() || apply.promoteProxy != ""
-		mcpProxy = s.m.plannedProxyAddr(captureAfter, globalAfterValue, poolAfter)
-		mcpCA = s.m.plannedCACert(captureAfter)
-	}
 	if req.ProxyReconnectMax != nil || req.ProxyReconnectInterval != nil {
 		if req.ProxyReconnectMax != nil {
 			writes[settingProxyReconnectMax] = strconv.Itoa(*req.ProxyReconnectMax)
@@ -4298,6 +4286,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		changed = true
 	}
 
+	if projectMCP {
+		// Serialize projection saves: two concurrent saves must not compute
+		// proxy args from interleaved snapshots.
+		s.projectMCPMu.Lock()
+		defer s.projectMCPMu.Unlock()
+	}
 	if len(writes) > 0 || intelligence || projectMCP {
 		err := s.m.pg.WithSettingsTx(r.Context(), func(tx *sql.Tx) error {
 			if intelligence {
@@ -4316,8 +4310,35 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			if projectMCP {
 				// Written before the settings rows so the lock order matches the
-				// proxy-pool API (mcp_servers, then settings).
-				if err := syncBrowserMCPProxyTx(r.Context(), tx, mcpProxy, mcpCA, mcpScreenshot); err != nil {
+				// proxy-pool API (mcp_servers, then settings). Read the committed
+				// snapshot plus this save's pending writes — never the runtime
+				// mirrors, which only update after commit.
+				captureAfter, err := settingBoolTx(r.Context(), tx, settingTrafficCapture)
+				if err != nil {
+					return err
+				}
+				if req.TrafficCapture != nil {
+					captureAfter = *req.TrafficCapture
+				}
+				globalAfter, err := settingStringTx(r.Context(), tx, settingGlobalProxy)
+				if err != nil {
+					return err
+				}
+				if v, ok := writes[settingGlobalProxy]; ok {
+					globalAfter = v
+				}
+				poolAfter, err := poolConfiguredTx(r.Context(), tx, writes)
+				if err != nil {
+					return err
+				}
+				screenshot, err := settingBoolTx(r.Context(), tx, settingBrowserScreenshot)
+				if err != nil {
+					return err
+				}
+				if req.BrowserScreenshot != nil {
+					screenshot = *req.BrowserScreenshot
+				}
+				if err := syncBrowserMCPProxyTx(r.Context(), tx, s.m.plannedProxyAddr(captureAfter, globalAfter, poolAfter), s.m.plannedCACert(captureAfter), screenshot); err != nil {
 					return err
 				}
 			}
@@ -4325,7 +4346,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			if req.BrowserScreenshot != nil {
-				return s.setReporterBrowserScreenshotVisibilityTx(tx, *req.BrowserScreenshot)
+				return s.setReporterBrowserScreenshotVisibilityTx(r.Context(), tx, *req.BrowserScreenshot)
 			}
 			return nil
 		})
@@ -4485,26 +4506,60 @@ FROM mcp_servers WHERE name=$1`, browserMCPName).Scan(&srv.ID, &srv.Name, &srv.T
 	return err
 }
 
+// settingBoolTx reads one boolean setting from the caller's transaction.
+func settingBoolTx(ctx context.Context, tx *sql.Tx, key string) (bool, error) {
+	v, ok, err := db.GetSettingTx(ctx, tx, key)
+	if err != nil || !ok {
+		return false, err
+	}
+	return v == "true" || v == "1", nil
+}
+
+// settingStringTx reads one string setting from the caller's transaction.
+func settingStringTx(ctx context.Context, tx *sql.Tx, key string) (string, error) {
+	v, _, err := db.GetSettingTx(ctx, tx, key)
+	return v, err
+}
+
+// poolConfiguredTx reports whether the proxy pool will hold entries after this
+// save, preferring the pending write when the save is promoting a legacy proxy.
+func poolConfiguredTx(ctx context.Context, tx *sql.Tx, writes map[string]string) (bool, error) {
+	raw, ok := writes[settingProxyPool]
+	if !ok {
+		var err error
+		raw, ok, err = db.GetSettingTx(ctx, tx, settingProxyPool)
+		if err != nil {
+			return false, err
+		}
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return false, nil
+	}
+	var p proxyPoolPersist
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return false, nil
+	}
+	return len(p.Entries) > 0, nil
+}
+
 // setReporterBrowserScreenshotVisibilityTx is the transactional form of
 // setReporterBrowserScreenshotVisibility for putSettings: the permission row
 // joins the caller's settings transaction instead of landing separately.
-func (s *Server) setReporterBrowserScreenshotVisibilityTx(tx *sql.Tx, enabled bool) error {
-	reporter, err := s.m.pg.GetAgentByKey("reporter")
+func (s *Server) setReporterBrowserScreenshotVisibilityTx(ctx context.Context, tx *sql.Tx, enabled bool) error {
+	reporter, err := db.GetAgentByKeyTx(ctx, tx, "reporter")
 	if err != nil || reporter == nil {
 		return err
 	}
-	servers, err := s.m.pg.ListMCP()
+	id, found, err := db.MCPIDByNameTx(ctx, tx, browserMCPName)
 	if err != nil {
 		return err
 	}
-	for _, server := range servers {
-		if server.Name == browserMCPName {
-			return db.ToggleVisibilityTx(tx, reporter.ID, "mcp", server.ID, enabled)
-		}
+	if !found {
+		// The built-in browser MCP may be deleted by an administrator. Keep the
+		// setting writable so it takes effect automatically if the server returns.
+		return nil
 	}
-	// The built-in browser MCP may be deleted by an administrator. Keep the
-	// setting writable so it takes effect automatically if the server returns.
-	return nil
+	return db.ToggleVisibilityTx(tx, reporter.ID, "mcp", id, enabled)
 }
 
 // setReporterBrowserScreenshotVisibility keeps the report writer's browser MCP

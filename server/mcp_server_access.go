@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -102,6 +103,11 @@ func normalizeMCPAccessConfig(cfg mcpAccessConfig) (mcpAccessConfig, mcpAccess, 
 		mcpAccess{allowed: allowedPrefixes, proxies: proxyPrefixes}, nil
 }
 
+// errMCPAccessCorrupt marks a stored value that cannot be parsed. Callers may
+// replace it wholesale, but a partial update must refuse rather than drop the
+// fields the request did not resend.
+var errMCPAccessCorrupt = errors.New("invalid MCP access configuration")
+
 // loadMCPAccess reads the stored configuration. An unreadable or corrupt
 // configuration is an error: callers must refuse the request rather than fall
 // back to "no restriction".
@@ -115,10 +121,15 @@ func loadMCPAccess(store interface {
 	var cfg mcpAccessConfig
 	if ok && strings.TrimSpace(raw) != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-			return mcpAccessConfig{}, mcpAccess{}, fmt.Errorf("invalid MCP access configuration")
+			return mcpAccessConfig{}, mcpAccess{}, errMCPAccessCorrupt
 		}
 	}
-	return normalizeMCPAccessConfig(cfg)
+	normalized, access, err := normalizeMCPAccessConfig(cfg)
+	if err != nil {
+		// Stored entries that no longer validate are as unmergeable as bad JSON.
+		return mcpAccessConfig{}, mcpAccess{}, fmt.Errorf("%w: %v", errMCPAccessCorrupt, err)
+	}
+	return normalized, access, nil
 }
 
 func mcpPrefixesContain(prefixes []netip.Prefix, addr netip.Addr) bool {
