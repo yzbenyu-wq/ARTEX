@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useUITranslation } from "@/i18n/use-ui-translation";
 import { apiFetch, openSSE } from "@/lib/api";
-import { mergeOlder } from "@/lib/log-merge";
+import { appendLive, mergeOlder } from "@/lib/log-merge";
 import { MOCK } from "@/lib/mock/enabled";
 import type { LogLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -67,6 +67,9 @@ const levelDot: Record<LogLine["level"], string> = {
   error: "bg-red-500",
 };
 
+// 暂停缓冲上限，与实时窗口一致：长时间暂停时只保留最近 3000 行，不无限吃内存。
+const PAUSE_BUFFER_MAX = 3000;
+
 function fmtTime(ts: string) {
   const d = new Date(ts);
   if (isNaN(d.getTime())) return "";
@@ -92,6 +95,8 @@ export default function LogsPage() {
   const bootRef = React.useRef("");
   // 历史分页锚点：独立于渲染行，因为实时行永远没有 db_id。
   const oldestDbIdRef = React.useRef(0);
+  // 暂停期间到达的行先攒着，恢复时一次性并入，避免暂停即永久丢日志。
+  const pausedBuf = React.useRef<LogLine[]>([]);
 
   // Live tail via SSE. on connect, replays whatever is in the ring (includes
   // DB-restored history from the last 100 rows written before restart).
@@ -107,6 +112,7 @@ export default function LogsPage() {
         if (l.epoch && l.epoch !== bootRef.current) {
           bootRef.current = l.epoch;
           oldestDbIdRef.current = 0;
+          pausedBuf.current = [];
           setHasMore(true);
           setLines([l]);
         }
@@ -115,8 +121,13 @@ export default function LogsPage() {
         if (l.db_id && (oldestDbIdRef.current === 0 || l.db_id < oldestDbIdRef.current)) {
           oldestDbIdRef.current = l.db_id;
         }
-        if (pausedRef.current) return;
-        setLines((prev) => (prev.some((x) => x.seq === l.seq) ? prev : [...prev, l].slice(-3000)));
+        if (pausedRef.current) {
+          const buf = pausedBuf.current;
+          buf.push(l);
+          if (buf.length > PAUSE_BUFFER_MAX) buf.splice(0, buf.length - PAUSE_BUFFER_MAX);
+          return;
+        }
+        setLines((prev) => appendLive(prev, [l]));
       } catch {
         /* ignore malformed frame */
       }
@@ -148,6 +159,16 @@ export default function LogsPage() {
     } finally {
       setLoadingHistory(false);
     }
+  }
+
+  // 恢复时先把暂停期间攒下的行并入，再解除暂停，避免这一瞬间的新帧插队。
+  function togglePause() {
+    if (paused) {
+      const pending = pausedBuf.current;
+      pausedBuf.current = [];
+      if (pending.length > 0) setLines((prev) => appendLive(prev, pending));
+    }
+    setPaused((p) => !p);
   }
 
   const filtered = React.useMemo(() => {
@@ -201,12 +222,7 @@ export default function LogsPage() {
               </Button>
             ))}
           </div>
-          <Button
-            size="sm"
-            variant={paused ? "default" : "outline"}
-            className="h-8"
-            onClick={() => setPaused((p) => !p)}
-          >
+          <Button size="sm" variant={paused ? "default" : "outline"} className="h-8" onClick={togglePause}>
             {paused ? ui("screen.eb0c326b60ae89") : ui("screen.8d12fc0d4eb260")}
           </Button>
           <Button
@@ -215,6 +231,7 @@ export default function LogsPage() {
             className="h-8"
             onClick={() => {
               oldestDbIdRef.current = 0;
+              pausedBuf.current = [];
               setHasMore(true);
               setLines([]);
             }}

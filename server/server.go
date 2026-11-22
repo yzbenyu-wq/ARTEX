@@ -3337,15 +3337,43 @@ func (s *Server) getLogsHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items, "has_more": len(rows) == limit})
 }
 
+// sseLogID renders the resumable log-stream cursor. It carries the process epoch
+// because Seq restarts at 1 after a restart: a Last-Event-ID from the previous
+// process must not be mistaken for a position in the new one.
+func sseLogID(epoch string, seq int64) string {
+	return fmt.Sprintf("%s|%d", epoch, seq)
+}
+
+// logStreamSince picks the replay cursor for streamLogs. Last-Event-ID wins when
+// it carries this process's epoch (browser auto-reconnect), so the client resumes
+// exactly where it dropped; a header from an earlier process falls back to the
+// query param so the client receives the ring again and resets on the epoch change.
+func logStreamSince(lastEventID string, querySince int64, epoch string) int64 {
+	le := strings.TrimSpace(lastEventID)
+	if le == "" {
+		return querySince
+	}
+	e, seqStr, ok := strings.Cut(le, "|")
+	if !ok || e != epoch {
+		return querySince
+	}
+	n, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil || n < 0 {
+		return querySince
+	}
+	return n
+}
+
 // streamLogs is the live SSE tail of the backend log: replays history after
-// ?since=<seq>, then pushes each new line.
+// ?since=<seq> (or Last-Event-ID), then pushes each new line.
 func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeErr(w, 500, "streaming unsupported")
 		return
 	}
-	since := int64(atoiDefault(r.URL.Query().Get("since"), 0))
+	epoch := logSink.epoch // immutable after init; no lock needed
+	since := logStreamSince(r.Header.Get("Last-Event-ID"), int64(atoiDefault(r.URL.Query().Get("since"), 0)), epoch)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -3355,10 +3383,10 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	defer unsub()
 	send := func(l LogLine) {
 		b, _ := json.Marshal(l)
-		fmt.Fprintf(w, "data: %s\n\n", b)
+		fmt.Fprintf(w, "id: %s\ndata: %s\n\n", sseLogID(epoch, l.Seq), b)
 		flusher.Flush()
 	}
-	lines, cursor := logSink.recent(since, 1000)
+	lines, cursor := logSink.recent(since, 0) // 0 → whole ring (cap-bounded): no gap for in-ring reconnects
 	for _, l := range lines {
 		send(l)
 	}

@@ -12,6 +12,20 @@ export function looseKey(l: LogLine): string {
   return `${l.level}|${l.tag}|${l.text}`;
 }
 
+// appendLive 追加实时/回放的行，按 seq 去掉已展示过的重复项，并把窗口限制在 cap。
+export function appendLive(prev: LogLine[], incoming: LogLine[], cap = 3000): LogLine[] {
+  if (incoming.length === 0) return prev;
+  const seen = new Set(prev.map((l) => l.seq));
+  const added: LogLine[] = [];
+  for (const l of incoming) {
+    if (seen.has(l.seq)) continue;
+    seen.add(l.seq);
+    added.push(l);
+  }
+  if (added.length === 0) return prev;
+  return [...prev, ...added].slice(-cap);
+}
+
 // mergeOlder 把一批更早的历史行前插到 prev，去掉与已有行重复的条目，再给新行
 // 分配低于当前最小 seq 的合成 seq（它们只用于 React key 和实时去重）。
 // loose=true 时额外按内容去重，用于 before 未知（锚点仍为 0）的首屏加载。

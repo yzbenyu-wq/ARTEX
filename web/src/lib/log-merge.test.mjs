@@ -1,4 +1,4 @@
-import { mergeOlder } from "./log-merge.ts";
+import { appendLive, mergeOlder } from "./log-merge.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -52,4 +52,34 @@ test("first load without an anchor dedups by content (ts may differ)", () => {
 test("empty batch is a no-op", () => {
   const prev = [line(9)];
   assert.equal(mergeOlder(prev, [], false), prev);
+});
+
+test("appendLive drops replayed seqs and keeps arrival order", () => {
+  const prev = [line(1), line(2)];
+  const merged = appendLive(prev, [line(2), line(3), line(4)]);
+
+  assert.deepEqual(
+    merged.map((l) => l.seq),
+    [1, 2, 3, 4],
+  );
+});
+
+test("appendLive returns prev when every frame is a duplicate", () => {
+  const prev = [line(1), line(2)];
+  assert.equal(appendLive(prev, [line(1), line(2)]), prev);
+});
+
+test("appendLive caps the window at the live size", () => {
+  const prev = [line(1), line(2), line(3)];
+  const merged = appendLive(prev, [line(4), line(5), line(6)], 4);
+
+  assert.deepEqual(
+    merged.map((l) => l.seq),
+    [3, 4, 5, 6],
+  );
+});
+
+test("appendLive no-op on empty incoming", () => {
+  const prev = [line(1)];
+  assert.equal(appendLive(prev, []), prev);
 });
