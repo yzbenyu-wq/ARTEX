@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -263,6 +264,50 @@ func TestRunRecipeToolProxyModeNone(t *testing.T) {
 	res = runRecipe(t, `{"argv":[["-c","printf '%s' \"$HTTP_PROXY\""]]}`, nil, db.ToolMeta{Binary: "sh", ProxyMode: "inherit"})
 	if res.IsError || res.Flatten() != "http://127.0.0.1:9999" {
 		t.Fatalf("inherit should pass HTTP_PROXY: %q (error=%v)", res.Flatten(), res.IsError)
+	}
+}
+
+func TestRunRecipeToolRejectsParameterizedExecutable(t *testing.T) {
+	res := runRecipe(t, `{"argv":[["{target}"],["-c","id"]]}`, map[string]any{"target": "sh"}, db.ToolMeta{})
+	if !res.IsError || !strings.Contains(res.Flatten(), "argv 首项") {
+		t.Fatalf("parameterized executable not rejected: %q (error=%v)", res.Flatten(), res.IsError)
+	}
+	// With an explicit binary the same shape stays an ordinary argument list.
+	res = runRecipe(t, `{"argv":[["%s","{target}"]]}`, map[string]any{"target": "ok"}, db.ToolMeta{Binary: "printf"})
+	if res.IsError || strings.TrimSpace(res.Flatten()) != "ok" {
+		t.Fatalf("explicit binary should still work: %q (error=%v)", res.Flatten(), res.IsError)
+	}
+}
+
+func TestValidateRecipeExecutableBinding(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"target":{"type":"string"}}}`)
+	bad := json.RawMessage(`{"argv":[["{target}"]]}`)
+	if err := validateToolExec("recipe", schema, bad, ""); err == nil {
+		t.Fatal("expected rejection when binary is empty and argv[0] is a placeholder")
+	}
+	if err := validateToolExec("recipe", schema, bad, "httpx"); err != nil {
+		t.Fatalf("explicit binary should pass: %v", err)
+	}
+	static := json.RawMessage(`{"argv":[["cat"]]}`)
+	if err := validateToolExec("recipe", schema, static, ""); err != nil {
+		t.Fatalf("static argv[0] should pass: %v", err)
+	}
+}
+
+func TestCappedOutputBounds(t *testing.T) {
+	c := newCappedOutput(1024, 256)
+	chunk := bytes.Repeat([]byte("a"), 64<<10)
+	for i := 0; i < 8; i++ {
+		if _, err := c.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := c.String()
+	if len(got) > 1024+256+128 {
+		t.Fatalf("output not bounded: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "中间省略") {
+		t.Fatalf("missing truncation marker")
 	}
 }
 

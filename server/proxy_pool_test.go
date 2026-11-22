@@ -646,6 +646,86 @@ func TestMergeMaskedProxyURLErrorIsMasked(t *testing.T) {
 	}
 }
 
+func TestMergeMaskedProxyURLKeepsUserWithMaskedPassword(t *testing.T) {
+	got, err := mergeMaskedProxyURL("http://newuser:***@NEW.example:9090", "http://old:secret@old.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "http://newuser:secret@NEW.example:9090" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMergeMaskedProxyURLRejectsMaskWithoutSavedAuth(t *testing.T) {
+	for _, old := range []string{"", "http://old.example:8080"} {
+		if _, err := mergeMaskedProxyURL("http://***@NEW.example:9090", old); err == nil {
+			t.Fatalf("old=%q: masked credentials accepted without saved auth", old)
+		}
+	}
+}
+
+func TestImportProxyPoolRejectsOverCap(t *testing.T) {
+	m := proxyTestManager(t)
+	if err := m.setProxyPoolEntries(nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = m.setProxyPoolEntries(nil, "")
+		_ = m.SetGlobalProxy("")
+	})
+
+	var text strings.Builder
+	for i := 1; i <= proxyPoolMaxEntries+1; i++ {
+		fmt.Fprintf(&text, "http://10.0.0.%d:8080\n", i)
+	}
+	body, _ := json.Marshal(map[string]string{"text": text.String()})
+	s := &Server{m: m, ctx: context.Background()}
+	w := httptest.NewRecorder()
+	s.importProxyPool(w, httptest.NewRequest(http.MethodPost, "/api/settings/proxy-pool/import", strings.NewReader(string(body))))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("over-cap import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := len(m.proxyPoolEntries()); got != 0 {
+		t.Fatalf("over-cap import kept %d entries", got)
+	}
+}
+
+func TestImportProxyPoolDefersProbing(t *testing.T) {
+	m := proxyTestManager(t)
+	if err := m.setProxyPoolEntries(nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = m.setProxyPoolEntries(nil, "")
+		_ = m.SetGlobalProxy("")
+	})
+
+	s := &Server{m: m, ctx: context.Background(), proxyPoolWake: make(chan struct{}, 1)}
+	probes := 0
+	s.proxyProbe = func(context.Context, string, string, []string, time.Duration) egressProbeResult {
+		probes++
+		return egressProbeResult{OK: true, ExitIP: "203.0.113.7", Probes: []egressAttempt{}}
+	}
+	body := `{"text":"http://10.0.1.1:8080\nhttp://10.0.1.2:8080"}`
+	w := httptest.NewRecorder()
+	s.importProxyPool(w, httptest.NewRequest(http.MethodPost, "/api/settings/proxy-pool/import", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if probes != 0 {
+		t.Fatalf("import probed synchronously: %d calls", probes)
+	}
+	if entries, _, _ := m.ProxyPoolSnapshot(); len(entries) != 2 {
+		t.Fatalf("entries=%d, want 2", len(entries))
+	}
+	// The supervisor picks this up; without a running one nothing should block.
+	select {
+	case <-s.proxyPoolWake:
+	default:
+		t.Fatal("import did not queue a probe round")
+	}
+}
+
 func TestDynamicForwardProxyUsesCurrentUpstream(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
 	defer target.Close()

@@ -255,7 +255,9 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
     if (r.status === 401 && typeof window !== "undefined") {
       localStorage.removeItem("artex_token");
       document.cookie = "artex_token=; path=/; max-age=0";
-      window.location.href = "/login";
+      // On the login page a 401 is a rejected password, not an expired session:
+      // reloading would wipe the error the user needs to see.
+      if (window.location.pathname !== "/login") window.location.href = "/login";
     }
     throw new ApiError(message, code, params);
   }
@@ -423,7 +425,10 @@ export const api = {
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
-    post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+    post<{ ok: boolean; token?: string }>("/auth/change-password", {
+      old_password: oldPassword,
+      new_password: newPassword,
+    }),
 
   // ---- tasks ----
   tasks: () =>

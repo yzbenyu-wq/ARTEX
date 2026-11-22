@@ -32,6 +32,9 @@ const (
 	defaultProxyHealthInterval   = 30
 	proxyPoolProbeTimeout        = 10 * time.Second
 	proxyPoolMaxProbeConcurrency = 4
+	// proxyPoolMaxEntries bounds one pool. Every member is probed on a health
+	// tick, so an unbounded import turns into an unbounded probe queue.
+	proxyPoolMaxEntries = 500
 )
 
 // ProxyPoolEntry is the public shape. URL is always masked in API responses.
@@ -157,8 +160,7 @@ func (m *Manager) initProxyPool() {
 		}
 	}
 	if len(m.proxyPool.entries) == 0 && !poolSettingPresent && strings.TrimSpace(m.globalProxy) != "" {
-		m.proxyPool.entries = []proxyPoolEntry{{ProxyPoolEntry: ProxyPoolEntry{ID: "proxy-legacy", URL: maskSecrets(m.globalProxy), Enabled: true, Health: "healthy"}, RawURL: m.globalProxy}}
-		m.proxyPool.active = "proxy-legacy"
+		m.proxyPool.entries, m.proxyPool.active = legacyProxyPool(m.globalProxy)
 		_ = m.persistProxyPoolLocked()
 	}
 	if len(m.proxyPool.entries) == 0 && poolSettingPresent {
@@ -218,11 +220,40 @@ func (m *Manager) persistProxyPoolLocked() error {
 	if m.pg == nil {
 		return nil
 	}
-	b, err := json.Marshal(proxyPoolPersist{Entries: m.proxyPool.entries, Active: m.proxyPool.active})
+	b, err := proxyPoolJSON(m.proxyPool.entries, m.proxyPool.active)
 	if err != nil {
 		return err
 	}
 	return m.pg.SetSetting(settingProxyPool, string(b))
+}
+
+func proxyPoolJSON(entries []proxyPoolEntry, active string) ([]byte, error) {
+	return json.Marshal(proxyPoolPersist{Entries: entries, Active: active})
+}
+
+// legacyProxyPool turns the single legacy global-proxy field into the pool
+// entry the runtime uses. Startup migration and the settings form both call it
+// so both paths produce identical state.
+func legacyProxyPool(raw string) ([]proxyPoolEntry, string) {
+	return []proxyPoolEntry{{
+		ProxyPoolEntry: ProxyPoolEntry{ID: "proxy-legacy", URL: maskSecrets(raw), Enabled: true, Health: "healthy"},
+		RawURL:         raw,
+	}}, "proxy-legacy"
+}
+
+// legacyProxyPoolWrites returns the settings rows that persist the promotion of
+// the legacy global proxy into the pool, so it can join a settings transaction.
+func legacyProxyPoolWrites(raw string) (map[string]string, error) {
+	entries, active := legacyProxyPool(raw)
+	b, err := proxyPoolJSON(entries, active)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		settingProxyPool:       string(b),
+		settingProxyPoolActive: active,
+		settingGlobalProxy:     raw,
+	}, nil
 }
 
 func (m *Manager) ProxyPoolSnapshot() ([]ProxyPoolEntry, string, []ProxySwitchLog) {
@@ -452,7 +483,20 @@ func (m *Manager) proxyHealthConfig() (threshold int, cooldown, interval time.Du
 	return proxyIntSetting(m.pg, settingProxyHealthThreshold, defaultProxyHealthThreshold), time.Duration(proxyIntSetting(m.pg, settingProxyHealthCooldown, defaultProxyHealthCooldown)) * time.Second, time.Duration(proxyIntSetting(m.pg, settingProxyHealthInterval, defaultProxyHealthInterval)) * time.Second
 }
 
-func (m *Manager) SetProxyPoolSettings(timed bool, interval int, onFailure bool, strategy string, threshold, cooldown, healthInterval int) error {
+// validateProxyPoolSettings checks rotation/health bounds without writing.
+// proxyPoolSettingsUpdate holds the fully merged rotate/health values a request
+// resolved to, so the handler can validate once up front and then persist.
+type proxyPoolSettingsUpdate struct {
+	timed          bool
+	interval       int
+	onFailure      bool
+	strategy       string
+	threshold      int
+	cooldown       int
+	healthInterval int
+}
+
+func validateProxyPoolSettings(interval int, strategy string, threshold, cooldown, healthInterval int) error {
 	if interval < minProxyRotateInterval {
 		return fmt.Errorf("定时轮换间隔不能小于 %d 秒", minProxyRotateInterval)
 	}
@@ -461,6 +505,13 @@ func (m *Manager) SetProxyPoolSettings(timed bool, interval int, onFailure bool,
 	}
 	if threshold < 1 || cooldown < 1 || healthInterval < 1 {
 		return errors.New("健康检查参数必须大于 0")
+	}
+	return nil
+}
+
+func (m *Manager) SetProxyPoolSettings(timed bool, interval int, onFailure bool, strategy string, threshold, cooldown, healthInterval int) error {
+	if err := validateProxyPoolSettings(interval, strategy, threshold, cooldown, healthInterval); err != nil {
+		return err
 	}
 	return m.pg.SetSettingsAtomic(context.Background(), map[string]string{settingProxyRotateTimed: fmt.Sprint(timed), settingProxyRotateInterval: fmt.Sprint(interval), settingProxyRotateFailure: fmt.Sprint(onFailure), settingProxyRotateStrategy: strategy, settingProxyHealthThreshold: fmt.Sprint(threshold), settingProxyHealthCooldown: fmt.Sprint(cooldown), settingProxyHealthInterval: fmt.Sprint(healthInterval)})
 }
@@ -787,6 +838,10 @@ func (s *Server) importProxyPool(w http.ResponseWriter, r *http.Request) {
 		seen[proxyURLKey(u)] = true
 	}
 	active := s.m.proxyPoolActiveID()
+	if len(entries) > proxyPoolMaxEntries {
+		writeErr(w, 400, fmt.Sprintf("代理池最多 %d 条，本次导入后为 %d 条", proxyPoolMaxEntries, len(entries)))
+		return
+	}
 	if active != "" {
 		foundActive := false
 		for _, e := range entries {
@@ -832,9 +887,14 @@ func (s *Server) importProxyPool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Probe imported/unchecked entries before any pool-wide pause decision. The
-	// task state is untouched until this round has completed.
-	s.proxyPoolTick()
+	// Probe in the background: hundreds of entries at 4-way concurrency would
+	// otherwise hold proxyPoolTickMu (and this response) for minutes. The
+	// supervisor coalesces wake signals and leaves task state alone until the
+	// round completes.
+	select {
+	case s.proxyPoolWake <- struct{}{}:
+	default:
+	}
 	entriesOut, activeOut, logs := s.m.ProxyPoolSnapshot()
 	writeJSON(w, 200, map[string]any{"entries": entriesOut, "active_id": activeOut, "switch_log": logs, "errors": errs})
 }
@@ -848,33 +908,60 @@ func (m *Manager) proxyPoolActiveID() string {
 	return m.proxyPool.active
 }
 
+// proxyURLHasMask reports whether the parsed proxy carries the masked-userinfo
+// sentinel that GET endpoints emit instead of real credentials.
+func proxyURLHasMask(u *url.URL) bool {
+	if u == nil || u.User == nil {
+		return false
+	}
+	if strings.Contains(u.User.Username(), "***") {
+		return true
+	}
+	pw, ok := u.User.Password()
+	return ok && strings.Contains(pw, "***")
+}
+
+// mergeMaskedProxyURL splices saved credentials into an edited proxy address:
+// the form shows "http://***@host", so a host/port change must keep the stored
+// user:password. A masked value with nothing saved is an error, not something to
+// persist literally.
 func mergeMaskedProxyURL(raw, old string) (string, error) {
+	return mergeMaskedProxy(raw, old, traffic.ValidateProxyURL)
+}
+
+// mergeMaskedProxy is the shared splice; parse is the caller's URL validator
+// (the agent proxy and the updater accept slightly different schemes).
+func mergeMaskedProxy(raw, old string, parse func(string) (*url.URL, error)) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", nil
 	}
-	nu, err := traffic.ValidateProxyURL(raw)
+	nu, err := parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("%s", maskSecrets(err.Error()))
 	}
-	if ou, _ := traffic.ValidateProxyURL(old); ou != nil && nu.User != nil && ou.User != nil {
-		newUser := nu.User.Username()
-		newPW, hasNewPW := nu.User.Password()
-		maskedUser := newUser == "***" || newUser == "******"
-		maskedPW := hasNewPW && (strings.Contains(newPW, "***") || strings.Contains(newPW, "******"))
-		if maskedUser {
-			oldPW, hasOldPW := ou.User.Password()
-			if hasOldPW {
-				nu.User = url.UserPassword(ou.User.Username(), oldPW)
-			} else {
-				nu.User = url.User(ou.User.Username())
-			}
-		} else if maskedPW {
-			if oldPW, hasOldPW := ou.User.Password(); hasOldPW {
-				nu.User = url.UserPassword(newUser, oldPW)
-			} else {
-				nu.User = url.User(newUser)
-			}
+	if !proxyURLHasMask(nu) {
+		return nu.String(), nil
+	}
+	ou, _ := parse(old)
+	if ou == nil || ou.User == nil {
+		return "", fmt.Errorf("代理地址含掩码（***）但没有可复用的已保存凭证，请重新输入完整地址")
+	}
+	newUser := nu.User.Username()
+	newPW, hasNewPW := nu.User.Password()
+	maskedUser := strings.Contains(newUser, "***")
+	maskedPW := hasNewPW && strings.Contains(newPW, "***")
+	if maskedUser {
+		if oldPW, hasOldPW := ou.User.Password(); hasOldPW {
+			nu.User = url.UserPassword(ou.User.Username(), oldPW)
+		} else {
+			nu.User = url.User(ou.User.Username())
+		}
+	} else if maskedPW {
+		if oldPW, hasOldPW := ou.User.Password(); hasOldPW {
+			nu.User = url.UserPassword(newUser, oldPW)
+		} else {
+			nu.User = url.User(newUser)
 		}
 	}
 	return nu.String(), nil

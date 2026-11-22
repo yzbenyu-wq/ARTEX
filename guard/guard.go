@@ -56,9 +56,10 @@ func (g *Guard) Hooks() *hook.Registry { return g.reg }
 
 func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 	// Extract the shell-command surface for the audit log: Bash + the interactive-shell
-	// tools (shell_open's command, shell_send's text). Destructive/exfil gating is no
-	// longer hard-coded here — it now lives in the DB intercept rules, evaluated by
-	// applyIntercept below. Other tools record an empty command.
+	// tools (shell_open's command, shell_send's text). For user-defined tools the
+	// command only exists after template/argv rendering, so the interceptor's host
+	// policy supplies it. Destructive/exfil gating lives in the DB intercept rules,
+	// evaluated by applyIntercept below.
 	var cmd string
 	switch ev.ToolName {
 	case "Bash", "shell_open":
@@ -74,25 +75,45 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 		_ = json.Unmarshal(ev.Input, &in)
 		cmd = in.Text
 	}
+	surface := g.commandSurface(ev.ToolName, ev.Input)
+	if surface != "" {
+		if cmd != "" {
+			cmd += "\n"
+		}
+		cmd += surface
+	}
 	g.record(ev.ToolName, "allow", "", cmd)
-	return g.applyIntercept(ctx, ev)
+	return g.applyIntercept(ctx, ev, cmd, surface)
+}
+
+func (g *Guard) commandSurface(toolName string, input json.RawMessage) string {
+	if g.interceptor == nil {
+		return ""
+	}
+	return g.interceptor.CommandSurface(toolName, input)
 }
 
 // applyIntercept evaluates user-configured intercept rules against the tool call.
-// Both rules and the fallback judge receive the complete tool input.
-func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
+// Both rules and the fallback judge receive the complete tool input; when the
+// host policy exposes an effective command, it is merged in as "command" so
+// command-content rules cover custom tools too.
+func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event, cmd, surface string) hook.Result {
 	if g.interceptor == nil {
 		return hook.Result{}
 	}
 	if !g.interceptor.IsToolEnabled(ev.ToolName) {
 		return hook.Result{}
 	}
-	ctx = intercept.WithCall(ctx, ev.ToolName, ev.Input)
-	dec, matched := g.interceptor.Match(ev.ToolName, ev.Input)
+	input := ev.Input
+	if surface != "" {
+		input = intercept.AugmentCommandInput(input, surface)
+	}
+	ctx = intercept.WithCall(ctx, ev.ToolName, input)
+	dec, matched := g.interceptor.Match(ev.ToolName, input)
 	if !matched {
 		// No rule matched. Ask the LLM fallback judge (if enabled); when it is off
 		// or unwired, keep current behavior and allow.
-		d, judged := g.interceptor.Judge(ctx, ev.ToolName, ev.Input)
+		d, judged := g.interceptor.Judge(ctx, ev.ToolName, input)
 		if !judged {
 			return hook.Result{}
 		}
@@ -101,22 +122,22 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	switch dec.Action {
 	case "deny":
 		// 观测:deny 命中不阻塞审批,直接记一条 denied（历史/任务拦截页可见）。
-		g.interceptor.Log(ctx, intercept.ConvIDFromContext(ctx), dec, ev.ToolName, ev.Input, "denied")
-		return g.block(ev.ToolName, systemBlockMessage(dec.Message), "")
+		g.interceptor.Log(ctx, intercept.ConvIDFromContext(ctx), dec, ev.ToolName, input, "denied")
+		return g.block(ev.ToolName, systemBlockMessage(dec.Message), cmd)
 	case "allow":
 		// Record explicit rule and model approvals so review details remain auditable.
-		g.interceptor.Log(ctx, intercept.ConvIDFromContext(ctx), dec, ev.ToolName, ev.Input, "allowed")
+		g.interceptor.Log(ctx, intercept.ConvIDFromContext(ctx), dec, ev.ToolName, input, "allowed")
 		return hook.Result{}
 	case "ask":
 		// If the worker context is already cancelled (task stopped / killed), block
 		// immediately without creating a pending record — avoids orphaned DB entries
 		// and makes execOne complete fast, reducing the race against drainSynthetic.
 		if ctx.Err() != nil {
-			return g.block(ev.ToolName, systemBlockMessage("工作已取消，平台安全管控阻止执行"), "")
+			return g.block(ev.ToolName, systemBlockMessage("工作已取消，平台安全管控阻止执行"), cmd)
 		}
 		convID := intercept.ConvIDFromContext(ctx)
-		if !g.interceptor.HandleAsk(ctx, convID, dec, ev.ToolName, ev.Input) {
-			return g.block(ev.ToolName, systemBlockMessage("人工审批未通过（用户拒绝或审批超时）"), "")
+		if !g.interceptor.HandleAsk(ctx, convID, dec, ev.ToolName, input) {
+			return g.block(ev.ToolName, systemBlockMessage("人工审批未通过（用户拒绝或审批超时）"), cmd)
 		}
 		return hook.Result{}
 	}

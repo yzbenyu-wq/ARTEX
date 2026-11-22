@@ -593,7 +593,7 @@ export default function ToolsPage() {
       toast.error(ui("screen.toolboxInvalidJson"));
       return;
     }
-    const list = Array.isArray(parsed) ? parsed : (parsed as { tools?: unknown }).tools;
+    const list = Array.isArray(parsed) ? parsed : (parsed as { tools?: unknown } | null)?.tools;
     if (!Array.isArray(list)) {
       toast.error(ui("screen.toolboxInvalidJson"));
       return;

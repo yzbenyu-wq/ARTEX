@@ -159,7 +159,7 @@ func newSideHTTPFixture(t *testing.T) *sideHTTPFixture {
 			s.provByProfile[active.ID] = &provEntry{prov: p, cfg: activeCfg}
 		}
 	}
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -399,9 +399,12 @@ func (s *Server) testEgressProxy(w http.ResponseWriter, r *http.Request) {
 		proxyGuards = s.snapshotProxyReconnectGuardsWithExhausted(false, true)
 	}
 
-	configuredProxy := strings.TrimSpace(req.GlobalProxy)
-	if strings.Contains(configuredProxy, "***") || strings.Contains(configuredProxy, "******") {
-		configuredProxy = s.m.GlobalProxy()
+	// The form echoes masked credentials ("http://***@host"); splice the saved
+	// user:password so the probe tests the edited host, not the old address.
+	configuredProxy, err := mergeMaskedProxyURL(req.GlobalProxy, savedProxy)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
 	}
 	// 表单值 ≠ 已保存值时，② 仍按表单值测，但 agent 走的是已保存值——必须提示。
 	// 归一化再比：尾斜杠不算"未保存"。

@@ -46,6 +46,13 @@ func decodeBody[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 	return out
 }
 
+func TestProbeToolVersionScrubsEnv(t *testing.T) {
+	t.Setenv("ARTEX_PROBE_SECRET", "s3cret-should-not-leak")
+	if got := probeToolVersion(context.Background(), "printenv ARTEX_PROBE_SECRET"); got != "" {
+		t.Fatalf("version probe leaked server env: %q", got)
+	}
+}
+
 func TestProbeToolVersion(t *testing.T) {
 	multi := writeScript(t, "echo 1.2.3\necho noise\n")
 	if got := probeToolVersion(context.Background(), multi); got != "1.2.3" {

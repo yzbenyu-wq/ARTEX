@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -19,8 +20,12 @@ import (
 const (
 	jwtKeyFilename = "jwt.key"
 	authPassKey    = "auth.password_hash"
-	jwtTTL         = 7 * 24 * time.Hour
-	keyChars       = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	// authVerKey stores the current session epoch. Tokens carry it at issuance;
+	// a bump invalidates every previously issued token (password change, manual
+	// revoke) without rotating the signing key or touching other data.
+	authVerKey = "auth.token_version"
+	jwtTTL     = 7 * 24 * time.Hour
+	keyChars   = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	// 下限与 setup 页的前端校验一致——校验只放在前端等于没放，直接打 API 就能
 	// 绕过。上限是 bcrypt 的硬限制：超过 72 字节 GenerateFromPassword 会返回
@@ -100,24 +105,127 @@ func migrateJWTKey(dst, src string) {
 	log.Printf("[auth] JWT key 已从 %s 迁移到 %s", src, dst)
 }
 
-// signJWT issues a 7-day HS256 token for user ARTEX.
-func signJWT(key []byte) (string, error) {
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-		Subject:   "ARTEX",
-		ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
-		IssuedAt:  jwt.NewNumericDate(time.Now()),
+// authTokenClaims is the admin session token payload. Version is compared with
+// authVerKey on every authenticated request, so bumping the stored epoch revokes
+// all tokens issued before it.
+type authTokenClaims struct {
+	Version int64 `json:"ver"`
+	jwt.RegisteredClaims
+}
+
+// signJWT issues a 7-day HS256 token tagged with the current session epoch.
+func signJWT(key []byte, version int64) (string, error) {
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, authTokenClaims{
+		Version: version,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   "ARTEX",
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
 	}).SignedString(key)
 }
 
-// verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
-func verifyJWT(tokenStr string, key []byte) bool {
-	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
+func parseAuthToken(tokenStr string, key []byte) (authTokenClaims, bool) {
+	var claims authTokenClaims
+	t, err := jwt.ParseWithClaims(tokenStr, &claims, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method")
 		}
 		return key, nil
 	})
-	return err == nil && t.Valid
+	if err != nil || !t.Valid {
+		return authTokenClaims{}, false
+	}
+	return claims, true
+}
+
+// verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
+// It checks signature/expiry only; session revocation is enforced by
+// verifyAdminJWT (which also compares the token's version).
+func verifyJWT(tokenStr string, key []byte) bool {
+	_, ok := parseAuthToken(tokenStr, key)
+	return ok
+}
+
+// loadAuthTokenVersion reads the session epoch from the settings table. Absent
+// or malformed (admin-editable) → 0, so a corrupted value cannot lock everyone out.
+// A Server with no settings store at all (test wiring; production NewManager
+// fails hard without PG) has no persisted epoch either, so it also reads as 0 —
+// unlike a store that exists but errors, which must surface as 503.
+func (s *Server) loadAuthTokenVersion() (int64, error) {
+	if s == nil || s.m == nil || s.m.PG() == nil {
+		return 0, nil
+	}
+	raw, ok, err := s.m.PG().GetSetting(authVerKey)
+	if err != nil {
+		return 0, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		log.Printf("[auth] token 版本值无效(%q)，按 0 处理", raw)
+		return 0, nil
+	}
+	return n, nil
+}
+
+// authTokenVersion returns the cached session epoch, loading it once from the DB.
+func (s *Server) authTokenVersion() (int64, error) {
+	if s.authVerLoaded.Load() {
+		return s.authVer.Load(), nil
+	}
+	s.authVerMu.Lock()
+	defer s.authVerMu.Unlock()
+	if s.authVerLoaded.Load() {
+		return s.authVer.Load(), nil
+	}
+	v, err := s.loadAuthTokenVersion()
+	if err != nil {
+		return 0, err
+	}
+	s.authVer.Store(v)
+	s.authVerLoaded.Store(true)
+	return v, nil
+}
+
+// verifyAdminJWT validates signature/expiry and the session epoch. A DB error is
+// returned separately so callers can answer 503 instead of a misleading 401.
+func (s *Server) verifyAdminJWT(tokenStr string) (bool, error) {
+	if tokenStr == "" {
+		return false, nil
+	}
+	claims, ok := parseAuthToken(tokenStr, s.jwtKey)
+	if !ok {
+		return false, nil
+	}
+	ver, err := s.authTokenVersion()
+	if err != nil {
+		return false, err
+	}
+	return claims.Version == ver, nil
+}
+
+// bumpAuthTokenVersion persists epoch+1 and updates the cache, revoking every
+// token issued with an earlier epoch.
+func (s *Server) bumpAuthTokenVersion() (int64, error) {
+	if s == nil || s.m == nil || s.m.PG() == nil {
+		return 0, fmt.Errorf("数据库不可用")
+	}
+	s.authVerMu.Lock()
+	defer s.authVerMu.Unlock()
+	cur, err := s.loadAuthTokenVersion()
+	if err != nil {
+		return 0, err
+	}
+	next := cur + 1
+	if err := s.m.PG().SetSetting(authVerKey, strconv.FormatInt(next, 10)); err != nil {
+		return 0, err
+	}
+	s.authVer.Store(next)
+	s.authVerLoaded.Store(true)
+	return next, nil
 }
 
 // extractToken reads the JWT from Authorization: Bearer header,
@@ -146,7 +254,12 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeProductError(w, 401, "unauthorized", "未授权", nil)
 			return
 		}
-		if !verifyJWT(tok, s.jwtKey) {
+		ok, err := s.verifyAdminJWT(tok)
+		if err != nil {
+			writeProductError(w, 503, "data_unavailable", errDataSourceUnavailable, nil)
+			return
+		}
+		if !ok {
 			writeProductError(w, 401, "token_expired", "token 无效或已过期", nil)
 			return
 		}
@@ -215,7 +328,12 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeProductError(w, 403, "password_already_set", "密码已设置", nil)
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	ver, err := s.authTokenVersion()
+	if err != nil {
+		writeProductError(w, 503, "data_unavailable", "密码已设置，但读取会话版本失败，请重新登录", nil)
+		return
+	}
+	tok, err := signJWT(s.jwtKey, ver)
 	if err != nil {
 		writeProductError(w, 500, "token_failed", "token 生成失败", nil)
 		return
@@ -231,7 +349,12 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	if !verifyJWT(extractToken(r), s.jwtKey) {
+	ok, err := s.verifyAdminJWT(extractToken(r))
+	if err != nil {
+		writeProductError(w, 503, "data_unavailable", errDataSourceUnavailable, nil)
+		return
+	}
+	if !ok {
 		writeProductError(w, 401, "unauthorized", "未授权", nil)
 		return
 	}
@@ -274,13 +397,56 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeProductError(w, 500, "save_failed", "保存失败: "+err.Error(), nil)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true})
+	// A password change revokes every existing session, then hands the caller a
+	// fresh token so this browser stays logged in.
+	next, err := s.bumpAuthTokenVersion()
+	if err != nil {
+		writeProductError(w, 500, "revoke_failed", "密码已修改，但撤销旧会话失败，请重试: "+err.Error(), nil)
+		return
+	}
+	tok, err := signJWT(s.jwtKey, next)
+	if err != nil {
+		writeProductError(w, 500, "token_failed", "密码已修改，请重新登录", nil)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "token": tok})
+}
+
+// POST /api/auth/revoke — invalidates every issued admin token (this request's
+// included). Used to kill sessions after a token leak. The caller must log in
+// again; password change already performs the same bump.
+func (s *Server) authRevokeSessions(w http.ResponseWriter, r *http.Request) {
+	if s.pg(w) == nil {
+		return
+	}
+	ok, err := s.verifyAdminJWT(extractToken(r))
+	if err != nil {
+		writeProductError(w, 503, "data_unavailable", errDataSourceUnavailable, nil)
+		return
+	}
+	if !ok {
+		writeProductError(w, 401, "unauthorized", "未授权", nil)
+		return
+	}
+	next, err := s.bumpAuthTokenVersion()
+	if err != nil {
+		writeProductError(w, 500, "revoke_failed", "撤销失败: "+err.Error(), nil)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "token_version": next})
 }
 
 // POST /api/auth/login — validates username/password and returns a JWT.
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {
+		return
+	}
+	key := loginClientKey(r, pg)
+	if wait := s.loginLimiter.lockedFor(key); wait > 0 {
+		retryAfter := int((wait + time.Second - 1) / time.Second)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeProductError(w, http.StatusTooManyRequests, "too_many_attempts", "登录失败次数过多，请稍后再试", map[string]any{"retry_after": retryAfter})
 		return
 	}
 	var req struct {
@@ -292,6 +458,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Username != "ARTEX" {
+		s.loginLimiter.fail(key)
 		writeProductError(w, 401, "invalid_credentials", "用户名或密码错误", nil)
 		return
 	}
@@ -305,10 +472,17 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+		s.loginLimiter.fail(key)
 		writeProductError(w, 401, "invalid_credentials", "用户名或密码错误", nil)
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	s.loginLimiter.reset(key)
+	ver, err := s.authTokenVersion()
+	if err != nil {
+		writeProductError(w, 503, "data_unavailable", errDataSourceUnavailable, nil)
+		return
+	}
+	tok, err := signJWT(s.jwtKey, ver)
 	if err != nil {
 		writeProductError(w, 500, "token_failed", "token 生成失败", nil)
 		return

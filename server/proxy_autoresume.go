@@ -441,22 +441,13 @@ func (s *Server) testTaskProxy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": res.OK, "error": res.Error, "task_id": t.ID})
 }
 
-func (s *Server) setProxyReconnectSettings(max, interval *int) error {
-	if max != nil {
-		if *max < 1 || *max > 1000 {
-			return errors.New("proxy reconnect max must be 1..1000")
-		}
-		if err := s.m.pg.SetSetting(settingProxyReconnectMax, fmt.Sprint(*max)); err != nil {
-			return err
-		}
+// validateProxyReconnectSettings checks the reconnect bounds without writing.
+func validateProxyReconnectSettings(max, interval *int) error {
+	if max != nil && (*max < 1 || *max > 1000) {
+		return errors.New("proxy reconnect max must be 1..1000")
 	}
-	if interval != nil {
-		if *interval < 1 || *interval > 86400 {
-			return errors.New("proxy reconnect interval must be 1..86400 seconds")
-		}
-		if err := s.m.pg.SetSetting(settingProxyReconnectInterval, fmt.Sprint(*interval)); err != nil {
-			return err
-		}
+	if interval != nil && (*interval < 1 || *interval > 86400) {
+		return errors.New("proxy reconnect interval must be 1..86400 seconds")
 	}
 	return nil
 }

@@ -88,6 +88,14 @@ export default function SystemSettingsPage() {
   // 请求序号：改了输入/保存/切捕获之后，在途请求回来时序号已经变了，直接丢弃。
   // 不这么做会出现"结果刚被清空，又被上一次的响应填回来"。
   const egressSeq = React.useRef(0);
+  // 代理池导入后的后台探测轮询；卸载或再次导入时清掉，避免定时器叠加。
+  const poolPollRef = React.useRef<number | null>(null);
+  React.useEffect(
+    () => () => {
+      if (poolPollRef.current !== null) window.clearInterval(poolPollRef.current);
+    },
+    [],
+  );
   // 清空结果并作废在途请求。
   const clearEgressReport = () => {
     egressSeq.current += 1;
@@ -204,6 +212,10 @@ export default function SystemSettingsPage() {
     }
     if (!Number.isInteger(n) || n <= 0) {
       toast.error(t("settings.positiveConcurrency"));
+      return;
+    }
+    if (n > 50) {
+      toast.error(t("settings.workerLimit"));
       return;
     }
     setSavingWorkers(true);
@@ -531,6 +543,25 @@ export default function SystemSettingsPage() {
             r.errors.map((e) => t("settings.importLineError", { line: e.line, message: e.error })).join("；"),
           );
         else toast.success(t("settings.proxyPoolImported"));
+        // Probing runs in the background; the import response has no health yet.
+        if (poolPollRef.current !== null) window.clearInterval(poolPollRef.current);
+        let tries = 0;
+        const id = window.setInterval(() => {
+          tries += 1;
+          api
+            .proxyPool()
+            .then((pool) => {
+              setProxyPool(pool.entries);
+              setProxyPoolActiveId(pool.active_id);
+              setProxyPoolLogs(pool.switch_log);
+              const pending = pool.entries.some((e) => e.enabled && e.health === "unknown");
+              if (!pending || tries >= 10) window.clearInterval(id);
+            })
+            .catch(() => {
+              if (tries >= 10) window.clearInterval(id);
+            });
+        }, 3000);
+        poolPollRef.current = id;
       })
       .catch((e) => toast.error(t("settings.importFailedPrefix") + localizedError(e, t)));
   };
@@ -1874,6 +1905,7 @@ export default function SystemSettingsPage() {
                   <Input
                     type="number"
                     min={1}
+                    max={50}
                     className="w-32 font-mono text-sm"
                     placeholder="3"
                     value={workers}

@@ -138,7 +138,7 @@ func TestMCPServerAuthentication(t *testing.T) {
 	past := time.Now().Add(-time.Minute)
 	store.add(3, db.APITokenPrefix+"revoked", db.APIScopeRead).RevokedAt = &past
 	store.add(4, db.APITokenPrefix+"expired", db.APIScopeRead).ExpiresAt = &past
-	adminJWT, err := signJWT(s.jwtKey)
+	adminJWT, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +506,7 @@ func TestMCPServerPostgresEndToEnd(t *testing.T) {
 	if err := s.basicAuth.load(m.pg); err != nil {
 		t.Fatal(err)
 	}
-	adminJWT, err := signJWT(s.jwtKey)
+	adminJWT, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

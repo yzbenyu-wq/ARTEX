@@ -8,6 +8,9 @@ func TestValidateProxyURL(t *testing.T) {
 		"https://proxy.example.com:3128",
 		"socks5://10.0.0.1:1080",
 		"socks5://user:pass@10.0.0.1:1080",
+		"http://127.0.0.1:1",       // 端口下界
+		"http://127.0.0.1:65535",   // 端口上界
+		"http://proxy.example.com", // 省略端口走协议默认值
 	}
 	for _, raw := range ok {
 		if _, err := ValidateProxyURL(raw); err != nil {
@@ -15,10 +18,13 @@ func TestValidateProxyURL(t *testing.T) {
 		}
 	}
 	bad := []string{
-		"127.0.0.1:8080",         // no scheme
-		"ftp://host:21",          // unsupported scheme
-		"http://",                // no host
-		"socks4://10.0.0.1:1080", // unsupported scheme
+		"127.0.0.1:8080",             // no scheme
+		"ftp://host:21",              // unsupported scheme
+		"http://",                    // no host
+		"socks4://10.0.0.1:1080",     // unsupported scheme
+		"http://proxy.example:0",     // 端口下界越界
+		"http://proxy.example:65536", // 端口上界越界
+		"http://proxy.example:99999",
 	}
 	for _, raw := range bad {
 		if _, err := ValidateProxyURL(raw); err == nil {

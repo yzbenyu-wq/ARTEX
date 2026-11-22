@@ -240,7 +240,7 @@ func TestBasicAuthGate(t *testing.T) {
 	if verifyJWT(cookie.Value, s.jwtKey) {
 		t.Fatal("gate cookie accepted as admin JWT")
 	}
-	adminJWT, _ := signJWT(s.jwtKey)
+	adminJWT, _ := signJWT(s.jwtKey, 0)
 	for _, tc := range []struct {
 		name, path, user, pass, bearer string
 		cookie                         *http.Cookie
@@ -460,7 +460,7 @@ func TestBasicAuthPostgresLoginFlow(t *testing.T) {
 	if err := s.basicAuth.load(m.pg); err != nil {
 		t.Fatal(err)
 	}
-	adminJWT, err := signJWT(s.jwtKey)
+	adminJWT, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +527,7 @@ func TestBasicAuthExpiredSessionRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adminJWT, err := signJWT(s.jwtKey)
+	adminJWT, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

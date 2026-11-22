@@ -12,6 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { localizedError } from "@/i18n/errors";
 import { api } from "@/lib/api";
 import { auth } from "@/lib/auth";
 
@@ -73,8 +74,8 @@ export default function LoginPage() {
       const { token } = await api.login("ARTEX", password);
       auth.setToken(token);
       window.location.replace("/function/tasks");
-    } catch {
-      setError("auth.invalidCredentials");
+    } catch (err) {
+      setError(localizedError(err, t));
     } finally {
       setLoading(false);
     }

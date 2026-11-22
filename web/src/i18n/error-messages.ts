@@ -29,6 +29,10 @@ export const errorMessages = {
   "error.password_not_initialized": ["密码未初始化，请先设置密码", "Set up a password first"],
   "error.current_password_incorrect": ["当前密码错误", "The current password is incorrect"],
   "error.invalid_credentials": ["用户名或密码错误", "Incorrect username or password"],
+  "error.too_many_attempts": [
+    "登录失败次数过多，请 {{retry_after}} 秒后再试",
+    "Too many failed sign-ins. Try again in {{retry_after}} seconds.",
+  ],
   "update.available": ["新版本", "Update available"],
   "update.hint": ["发现新版本 {{version}}，点击前往更新", "Version {{version}} is available. Click to update."],
 } satisfies Record<string, readonly [string, string]>;

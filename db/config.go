@@ -937,7 +937,19 @@ ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.descriptio
 	return tx.Commit()
 }
 
-func (d *DB) SaveMCP(m *MCPServer) (int64, error) {
+// rowExecer is satisfied by both *DB and *sql.Tx, so mutations that must be
+// able to join a caller's transaction have a single implementation.
+type rowExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func (d *DB) SaveMCP(m *MCPServer) (int64, error) { return saveMCP(d, m) }
+
+// SaveMCPTx upserts an MCP server inside an existing transaction.
+func SaveMCPTx(tx *sql.Tx, m *MCPServer) (int64, error) { return saveMCP(tx, m) }
+
+func saveMCP(e rowExecer, m *MCPServer) (int64, error) {
 	args, env := string(m.Args), string(m.Env)
 	if args == "" {
 		args = "[]"
@@ -947,11 +959,11 @@ func (d *DB) SaveMCP(m *MCPServer) (int64, error) {
 	}
 	if m.ID == 0 {
 		var id int64
-		err := d.QueryRow(`INSERT INTO mcp_servers(name,transport,command,args,env,url,enabled,insecure) VALUES ($1,$2,NULLIF($3,''),$4,$5,NULLIF($6,''),$7,$8) RETURNING id`,
+		err := e.QueryRow(`INSERT INTO mcp_servers(name,transport,command,args,env,url,enabled,insecure) VALUES ($1,$2,NULLIF($3,''),$4,$5,NULLIF($6,''),$7,$8) RETURNING id`,
 			m.Name, m.Transport, m.Command, args, env, m.URL, m.Enabled, m.Insecure).Scan(&id)
 		return id, err
 	}
-	_, err := d.Exec(`UPDATE mcp_servers SET name=$1,transport=$2,command=NULLIF($3,''),args=$4,env=$5,url=NULLIF($6,''),enabled=$7,insecure=$8 WHERE id=$9`,
+	_, err := e.Exec(`UPDATE mcp_servers SET name=$1,transport=$2,command=NULLIF($3,''),args=$4,env=$5,url=NULLIF($6,''),enabled=$7,insecure=$8 WHERE id=$9`,
 		m.Name, m.Transport, m.Command, args, env, m.URL, m.Enabled, m.Insecure, m.ID)
 	return m.ID, err
 }
@@ -1106,11 +1118,20 @@ ON CONFLICT (agent_id,resource_kind,resource_id,mcp_tool_name) DO UPDATE SET ena
 
 // ToggleVisibility sets one (agent, kind, resource) visibility on/off (idempotent).
 func (d *DB) ToggleVisibility(agentID int64, kind string, resourceID int64, on bool) error {
+	return toggleVisibility(d, agentID, kind, resourceID, on)
+}
+
+// ToggleVisibilityTx sets one visibility row inside an existing transaction.
+func ToggleVisibilityTx(tx *sql.Tx, agentID int64, kind string, resourceID int64, on bool) error {
+	return toggleVisibility(tx, agentID, kind, resourceID, on)
+}
+
+func toggleVisibility(e rowExecer, agentID int64, kind string, resourceID int64, on bool) error {
 	if on {
-		_, err := d.Exec(`INSERT INTO agent_visibility(agent_id,resource_kind,resource_id,enabled) VALUES ($1,$2,$3,true)
+		_, err := e.Exec(`INSERT INTO agent_visibility(agent_id,resource_kind,resource_id,enabled) VALUES ($1,$2,$3,true)
 ON CONFLICT (agent_id,resource_kind,resource_id,mcp_tool_name) DO UPDATE SET enabled=true`, agentID, kind, resourceID)
 		return err
 	}
-	_, err := d.Exec(`DELETE FROM agent_visibility WHERE agent_id=$1 AND resource_kind=$2 AND resource_id=$3`, agentID, kind, resourceID)
+	_, err := e.Exec(`DELETE FROM agent_visibility WHERE agent_id=$1 AND resource_kind=$2 AND resource_id=$3`, agentID, kind, resourceID)
 	return err
 }

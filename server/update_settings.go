@@ -46,7 +46,16 @@ func (s *Server) getUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	// The form renders this value; credentials stay on the server like every
+	// other proxy field. PUT splices them back in.
+	cfg.Proxy = maskSecrets(cfg.Proxy)
 	writeJSON(w, 200, cfg)
+}
+
+// mergeMaskedUpdateProxy uses the updater's parser (it also accepts socks5h)
+// but shares the masked-credential splice with the agent proxy paths.
+func mergeMaskedUpdateProxy(raw, saved string) (string, error) {
+	return mergeMaskedProxy(raw, saved, selfupdate.ParseProxy)
 }
 
 func (s *Server) putUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +64,17 @@ func (s *Server) putUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "更新网络设置格式无效")
 		return
 	}
+	saved, err := s.loadUpdateSettings()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	merged, err := mergeMaskedUpdateProxy(cfg.Proxy, saved.Proxy)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	cfg.Proxy = merged
 	if err := cfg.validate(); err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -68,6 +88,7 @@ func (s *Server) putUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "保存更新网络设置失败")
 		return
 	}
+	cfg.Proxy = maskSecrets(cfg.Proxy)
 	writeJSON(w, 200, cfg)
 }
 

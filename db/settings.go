@@ -34,17 +34,24 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, key
 	return err
 }
 
-// SetSettingsAtomic upserts several settings in one transaction. Keys are
-// sorted so concurrent callers acquire row locks in a deterministic order.
-func (d *DB) SetSettingsAtomic(ctx context.Context, values map[string]string) error {
-	if len(values) == 0 {
-		return nil
-	}
+// WithSettingsTx runs fn inside one settings transaction. Everything fn writes
+// through tx commits together; any error rolls the whole batch back, so a
+// multi-field save never leaves half a configuration persisted.
+func (d *DB) WithSettingsTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // commit makes this a no-op
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// WriteSettingsTx upserts settings inside an existing transaction. Keys are
+// sorted so concurrent callers acquire row locks in a deterministic order.
+func (d *DB) WriteSettingsTx(ctx context.Context, tx *sql.Tx, values map[string]string) error {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -57,7 +64,17 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, key
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
+}
+
+// SetSettingsAtomic upserts several settings in one transaction.
+func (d *DB) SetSettingsAtomic(ctx context.Context, values map[string]string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	return d.WithSettingsTx(ctx, func(tx *sql.Tx) error {
+		return d.WriteSettingsTx(ctx, tx, values)
+	})
 }
 
 // InsertSettingIfAbsent 只在 key 尚未存在时写入，已存在则原样保留并返回 inserted=false。

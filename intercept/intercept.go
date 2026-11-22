@@ -120,6 +120,19 @@ func (p *pendingManager) remove(id int64) {
 // free of any llm dependency. profileID == 0 means "use the active/default profile".
 type Reviewer func(ctx context.Context, profileID int64, prompt string, input ReviewInput) (Decision, error)
 
+// ToolPolicy lets the host widen the intercept surface beyond the saved
+// enabled-tools list and expose the command a call will actually run. It exists
+// because user-defined tools are dynamic: their callability and their effective
+// command live in the tools table, not in the static enabled-tools setting.
+// Both callbacks must be cheap and non-blocking (in-memory lookups).
+type ToolPolicy struct {
+	// Enabled reports whether toolName should enter rule matching / judging.
+	Enabled func(toolName string) bool
+	// Surface returns the effective command, argv or request line for toolName,
+	// or "" when the tool has no command-like surface.
+	Surface func(toolName string, input json.RawMessage) string
+}
+
 // Interceptor loads intercept rules from the database and evaluates them on
 // tool calls. It is safe for concurrent use.
 type Interceptor struct {
@@ -128,7 +141,63 @@ type Interceptor struct {
 	cached       []compiledRule  // sorted by priority DESC; nil means not loaded yet
 	enabledTools map[string]bool // nil means not loaded yet
 	pending      *pendingManager
-	reviewer     Reviewer // nil = LLM fallback judge not wired
+	reviewer     Reviewer    // nil = LLM fallback judge not wired
+	policy       *ToolPolicy // nil = no host policy
+}
+
+// SetToolPolicy installs (or, with a zero value, clears) the host tool policy.
+func (i *Interceptor) SetToolPolicy(p ToolPolicy) {
+	i.mu.Lock()
+	if p.Enabled == nil && p.Surface == nil {
+		i.policy = nil
+	} else {
+		cp := p
+		i.policy = &cp
+	}
+	i.mu.Unlock()
+}
+
+func (i *Interceptor) policyRef() *ToolPolicy {
+	i.mu.RLock()
+	p := i.policy
+	i.mu.RUnlock()
+	return p
+}
+
+// CommandSurface returns the host-provided command surface for toolName. The
+// guard uses it for the audit log and to give rules/judge the real command.
+func (i *Interceptor) CommandSurface(toolName string, input json.RawMessage) string {
+	p := i.policyRef()
+	if p == nil || p.Surface == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.Surface(toolName, input))
+}
+
+// AugmentCommandInput merges the effective command into the tool input at the
+// top level so string/regex rules written against a "command" field also see
+// custom tools (whose input carries only their declared parameters). Existing
+// non-object input is preserved under "input".
+func AugmentCommandInput(input json.RawMessage, command string) json.RawMessage {
+	if strings.TrimSpace(command) == "" {
+		return input
+	}
+	var m map[string]json.RawMessage
+	if len(input) > 0 && json.Unmarshal(input, &m) == nil && m != nil {
+		cmd, err := json.Marshal(command)
+		if err == nil {
+			m["command"] = cmd
+			if b, err := json.Marshal(m); err == nil {
+				return b
+			}
+		}
+		return input
+	}
+	b, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		return input
+	}
+	return b
 }
 
 // SetReviewer installs the LLM fallback judge callback. Passing nil disables it.
@@ -227,24 +296,30 @@ func (i *Interceptor) rules() ([]compiledRule, error) {
 	return i.cached, nil
 }
 
-// IsToolEnabled returns true if the named tool is in the intercept-enabled set
-// (i.e. it should enter the rule-matching path). Uses the same double-check lock
-// pattern as rules().
+// IsToolEnabled returns true if the named tool should enter the rule-matching
+// path: it is in the intercept-enabled set, or the host tool policy claims it
+// (dynamically installed tools). Uses the same double-check lock pattern as
+// rules(); the policy callback is invoked outside the lock.
 func (i *Interceptor) IsToolEnabled(name string) bool {
 	i.mu.RLock()
-	if i.enabledTools != nil {
-		v := i.enabledTools[name]
-		i.mu.RUnlock()
-		return v
-	}
+	loaded := i.enabledTools != nil
+	listed := i.enabledTools[name]
+	p := i.policy
 	i.mu.RUnlock()
 
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if i.enabledTools == nil {
-		_ = i.loadLocked()
+	if !loaded {
+		i.mu.Lock()
+		if i.enabledTools == nil {
+			_ = i.loadLocked()
+		}
+		listed = i.enabledTools[name]
+		p = i.policy
+		i.mu.Unlock()
 	}
-	return i.enabledTools[name]
+	if listed {
+		return true
+	}
+	return p != nil && p.Enabled != nil && p.Enabled(name)
 }
 
 // GetEnabledTools returns the ordered list of tool names that are currently

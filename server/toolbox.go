@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -67,7 +68,8 @@ func (s *Server) pgToolStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // probeToolVersion runs an operator-configured version command directly (argv
-// split, no shell), with a short timeout and a hard output cap.
+// split, no shell), with a short timeout and a hard output cap. The child gets a
+// minimal env: a version command must never see the server's DB DSN/password.
 func probeToolVersion(ctx context.Context, cmd string) string {
 	fields := strings.Fields(cmd)
 	if len(fields) == 0 {
@@ -75,8 +77,13 @@ func probeToolVersion(ctx context.Context, cmd string) string {
 	}
 	cctx, cancel := context.WithTimeout(ctx, toolProbeTimeout)
 	defer cancel()
-	out, _ := exec.CommandContext(cctx, fields[0], fields[1:]...).CombinedOutput()
-	text := strings.TrimSpace(string(out))
+	c := exec.CommandContext(cctx, fields[0], fields[1:]...)
+	c.Env = probeEnv()
+	c.WaitDelay = toolProbeTimeout
+	out := newCappedOutput(maxToolVersion, 0)
+	c.Stdout, c.Stderr = out, out
+	_ = c.Run()
+	text := strings.TrimSpace(out.String())
 	if len(text) > maxToolVersion {
 		text = text[:maxToolVersion]
 	}
@@ -84,6 +91,18 @@ func probeToolVersion(ctx context.Context, cmd string) string {
 		text = strings.TrimSpace(text[:i])
 	}
 	return maskSecrets(text)
+}
+
+func probeEnv() []string {
+	path := os.Getenv("PATH")
+	if path == "" {
+		path = "/usr/local/bin:/usr/bin:/bin"
+	}
+	home := os.Getenv("HOME")
+	if home == "" {
+		home = "/root"
+	}
+	return []string{"PATH=" + path, "HOME=" + home, "LANG=C.UTF-8"}
 }
 
 // pgExportTools exports user-defined tools only. Built-in tools are code-owned and
@@ -170,7 +189,7 @@ func (s *Server) pgImportTools(w http.ResponseWriter, r *http.Request) {
 			skipped++
 			continue
 		}
-		if err := validateToolExec(t.Kind, t.Schema, t.Exec); err != nil {
+		if err := validateToolExec(t.Kind, t.Schema, t.Exec, t.Binary); err != nil {
 			errs = append(errs, label+": "+err.Error())
 			skipped++
 			continue
@@ -202,6 +221,9 @@ func (s *Server) pgImportTools(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		imported++
+	}
+	if imported > 0 {
+		s.refreshToolPolicy()
 	}
 	writeJSON(w, 200, map[string]any{"imported": imported, "skipped": skipped, "errors": errs})
 }

@@ -32,7 +32,7 @@ func TestUpdateSettingsHTTPPersistence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := New(ctx, m, dir, dir, dir)
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,5 +97,71 @@ func TestUpdateSettingsHTTPPersistence(t *testing.T) {
 		if m.GlobalProxy() != originalGlobal {
 			t.Fatal("update setting changed global proxy")
 		}
+	}
+}
+
+func TestUpdateSettingsMasksProxyCredentials(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
+	defer m.Close()
+	old, existed, err := m.pg.GetSetting(updateSettingsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if existed {
+			m.pg.SetSetting(updateSettingsKey, old)
+		} else {
+			m.pg.Exec("DELETE FROM settings WHERE key=$1", updateSettingsKey)
+		}
+	}()
+	m.pg.Exec("DELETE FROM settings WHERE key=$1", updateSettingsKey)
+
+	s := &Server{m: m}
+	put := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.putUpdateSettings(w, httptest.NewRequest(http.MethodPut, "/api/update/settings", strings.NewReader(body)))
+		return w
+	}
+	get := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.getUpdateSettings(w, httptest.NewRequest(http.MethodGet, "/api/update/settings", nil))
+		return w
+	}
+
+	const saved = "http://user:secret@proxy.example:3128"
+	if w := put(`{"proxy":"` + saved + `"}`); w.Code != http.StatusOK {
+		t.Fatalf("save status=%d body=%s", w.Code, w.Body.String())
+	}
+	if cfg, err := s.loadUpdateSettings(); err != nil || cfg.Proxy != saved {
+		t.Fatalf("stored proxy=%q err=%v", cfg.Proxy, err)
+	}
+	w := get()
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "secret") {
+		t.Fatalf("GET leaked credentials: %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"proxy":"http://***@proxy.example:3128"`) {
+		t.Fatalf("GET proxy not masked: %s", w.Body.String())
+	}
+
+	// Editing the host from the masked form keeps the saved credentials.
+	if w := put(`{"proxy":"http://***@new.example:9090"}`); w.Code != http.StatusOK {
+		t.Fatalf("masked save status=%d body=%s", w.Code, w.Body.String())
+	}
+	if cfg, err := s.loadUpdateSettings(); err != nil || cfg.Proxy != "http://user:secret@new.example:9090" {
+		t.Fatalf("merged proxy=%q err=%v", cfg.Proxy, err)
+	}
+
+	// A mask with nothing saved cannot be spliced; reject instead of storing it.
+	if w := put(`{"proxy":""}`); w.Code != http.StatusOK {
+		t.Fatalf("clear status=%d", w.Code)
+	}
+	if w := put(`{"proxy":"http://***@x.example:1"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("mask without saved auth status=%d body=%s", w.Code, w.Body.String())
+	}
+	if cfg, _ := s.loadUpdateSettings(); cfg.Proxy != "" {
+		t.Fatalf("rejected save changed proxy to %q", cfg.Proxy)
 	}
 }

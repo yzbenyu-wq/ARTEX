@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { localizedError } from "@/i18n/errors";
 import { api } from "@/lib/api";
+import { auth } from "@/lib/auth";
 
 export function ChangePasswordDialog({
   open,
@@ -54,7 +55,10 @@ export function ChangePasswordDialog({
     setSaving(true);
     api
       .changePassword(oldPassword, newPassword)
-      .then(() => {
+      .then((res) => {
+        // The backend revokes all sessions on password change and returns a
+        // replacement token so this browser stays signed in.
+        if (res.token) auth.setToken(res.token);
         toast.success(t("account.passwordChanged"));
         onOpenChange(false);
       })

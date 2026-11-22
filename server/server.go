@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -53,6 +55,16 @@ type Server struct {
 	skillDir  string // root directory for skill subdirectories
 	jwtKey    []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
 	basicAuth basicAuthGate
+
+	// Session epoch for admin tokens. Cached so requireAuth does not hit the DB
+	// per request; bumped (and persisted) by password change / manual revoke.
+	authVerMu     sync.Mutex
+	authVer       atomic.Int64
+	authVerLoaded atomic.Bool
+
+	// toolPolicy exposes user-defined tools to the intercept layer: their
+	// callability (rule match / judge coverage) and rendered command surface.
+	toolPolicy *customToolPolicy
 
 	// mcpStoreOverride replaces the PostgreSQL-backed MCP server store in tests.
 	mcpStoreOverride mcpStore
@@ -145,6 +157,8 @@ type Server struct {
 	// servers leave it nil and use probeEgress directly.
 	proxyProbe func(context.Context, string, string, []string, time.Duration) egressProbeResult
 	side       *sideQuestionState
+	// loginLimiter throttles password guessing per client address.
+	loginLimiter *loginLimiter
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.
@@ -181,7 +195,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{}, proxyPoolWake: make(chan struct{}, 1), proxyPoolProbeSem: make(chan struct{}, proxyPoolMaxProbeConcurrency),
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
-		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1)}
+		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1), loginLimiter: newLoginLimiter()}
 	m.SetTaskControlMutex(&s.concMu)
 	s.initSideQuestions()
 	if m.pg != nil {
@@ -319,7 +333,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		s.seedCredentialProcessor()
 		go s.runCredentialProcessor()
 	}
-	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
+	s.wireInterceptReviewer()   // LLM 兜底审批:未命中拦截规则的命令交给模型判定
+	s.wireToolInterceptPolicy() // 自定义工具进入拦截规则/裁判,并提供真实命令面
 	return s
 }
 
@@ -802,6 +817,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("POST /api/auth/revoke", s.authRevokeSessions)
 	mux.HandleFunc("GET /api/basic-auth/check", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusNoContent)
@@ -3861,6 +3877,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		NotifyBaseURL    *string `json:"notify_public_base_url"`
 		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
 	}
+	// Every settings field fits well under 64 KiB; cap the body so a large
+	// payload cannot be decoded (and buffered) just to be rejected later.
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -3877,59 +3896,50 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		req.EgressProbeURL = &value
 	}
-	if req.ConstraintsInjectPlanner != nil {
-		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {
-			writeErr(w, 500, err.Error())
+	// Validate everything else before the first write. The settings form saves
+	// many fields at once; a later 400 must not leave the earlier ones persisted.
+	var (
+		globalProxyMerged    string
+		hasGlobalProxy       bool
+		webSearchProxyMerged string
+		poolSettings         *proxyPoolSettingsUpdate
+	)
+	if req.GlobalProxy != nil {
+		merged, err := mergeMaskedProxyURL(*req.GlobalProxy, s.m.GlobalProxy())
+		if err != nil {
+			writeErr(w, 400, err.Error())
 			return
 		}
+		globalProxyMerged, hasGlobalProxy = merged, true
 	}
-	if req.ConstraintsInjectWorker != nil {
-		if err := s.m.pg.SetBool(settingConstraintsInjectWorker, *req.ConstraintsInjectWorker); err != nil {
-			writeErr(w, 500, err.Error())
+	if req.WebSearchProxy != nil {
+		_, _, _, _, savedSearchProxy := s.m.WebSearch()
+		merged, err := mergeMaskedProxyURL(*req.WebSearchProxy, savedSearchProxy)
+		if err != nil {
+			writeErr(w, 400, err.Error())
 			return
 		}
+		webSearchProxyMerged = merged
 	}
-	if req.NoaCompaction != nil {
-		// 每 run 读的解析器,切换即时对之后启动的 run 生效,无需 applyLLM 重建。
-		if err := s.m.SetNoaCompaction(*req.NoaCompaction); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-	}
-	// 推送全局项:投递引擎每轮重新读取,所以即时生效、无需重启。
-	if req.NotifyEnabled != nil {
-		if err := s.m.pg.SetBool(settingNotifyEnabled, *req.NotifyEnabled); err != nil {
-			writeErr(w, 500, err.Error())
+	if req.WebSearchBackend != nil {
+		if _, err := normalizeWebSearchBackend(*req.WebSearchBackend); err != nil {
+			writeErr(w, 400, err.Error())
 			return
 		}
 	}
 	if req.NotifyBaseURL != nil {
-		// 统一裁掉尾部斜杠:回链拼接用的是 fmt.Sprintf("%s/function/..."),
-		// 留着尾部斜杠会产出 "//function/..." 这种双斜杠路径。
+		// 统一裁掉尾部斜杠:回链拼接用的是 fmt.Sprintf("%s/function/...")。
 		base := trimTrailingSlash(strings.TrimSpace(*req.NotifyBaseURL))
 		if base != "" && !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
 			writeErr(w, 400, "回链地址需以 http:// 或 https:// 开头")
 			return
 		}
-		if err := s.m.pg.SetSetting(settingNotifyPublicBaseURL, base); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		req.NotifyBaseURL = &base
 	}
-	if req.NotifyDigestMins != nil {
-		// 下限 1 分钟:更短的周期等于实时推送,那样应该直接把渠道改成 realtime 模式。
-		if *req.NotifyDigestMins < 1 || *req.NotifyDigestMins > 24*60 {
-			writeErr(w, 400, "汇总周期需在 1 到 1440 分钟之间")
-			return
-		}
-		if err := s.m.pg.SetSetting(settingNotifyDigestMinutes, strconv.Itoa(*req.NotifyDigestMins)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+	if req.NotifyDigestMins != nil && (*req.NotifyDigestMins < 1 || *req.NotifyDigestMins > 24*60) {
+		writeErr(w, 400, "汇总周期需在 1 到 1440 分钟之间")
+		return
 	}
-	// A non-empty pool list takes precedence when both fields are present and
-	// synchronizes workers to its total. An empty list clears pools; when workers
-	// is also present it sets the legacy count for the newly restored legacy mode.
 	if req.WorkerPools != nil {
 		if len(*req.WorkerPools) == 0 && req.Workers != nil && *req.Workers <= 0 {
 			writeErr(w, 400, "workers 必须 >0")
@@ -3939,161 +3949,27 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if req.Workers != nil {
 			legacyWorkers = []int{*req.Workers}
 		}
-		if err := s.m.SetWorkerPools(*req.WorkerPools, legacyWorkers...); err != nil {
+		if err := s.m.ValidateWorkerPoolSelection(*req.WorkerPools, legacyWorkers...); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
-	} else if req.Workers != nil {
-		// An omitted worker_pools field leaves the saved mode unchanged. If a
-		// non-empty pool configuration is already saved, its total remains the
-		// authoritative concurrency and workers is deliberately ignored.
-		if len(s.m.WorkerPools()) == 0 {
-			if err := s.m.SetWorkers(*req.Workers); err != nil {
-				writeErr(w, 400, err.Error())
-				return
-			}
-		}
-	}
-	if req.ConcurrencyEnabled != nil || req.ConcurrencyLimit != nil {
-		// 部分 PUT:未给的字段用当前值兜底,避免只改一个把另一个重置。
-		curOn, curLimit := s.m.ConcurrencyLimit()
-		if curLimit == 0 {
-			curLimit = defaultConcurrencyLimit
-		}
-		on, limit := curOn, curLimit
-		if req.ConcurrencyEnabled != nil {
-			on = *req.ConcurrencyEnabled
-		}
-		if req.ConcurrencyLimit != nil {
-			limit = *req.ConcurrencyLimit
-		}
-		if err := s.m.SetConcurrency(on, limit); err != nil {
+	} else if req.Workers != nil && len(s.m.WorkerPools()) == 0 {
+		// A saved pool configuration stays authoritative, so a legacy count sent
+		// alongside it is ignored rather than rejected.
+		if err := validateWorkerCount(*req.Workers); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		// 立即协调一次:关闭时放行全部排队,调高上限时补位启动,不必等下一个 tick。
-		go s.reconcileConcurrency()
-	}
-	if req.PythonInterp != nil {
-		if err := s.m.pg.SetSetting(settingPythonInterp, strings.TrimSpace(*req.PythonInterp)); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-	}
-	if req.LLMRecord != nil {
-		// 录制器每次调用读取该标志，切换即时生效，无需 applyLLM 重建。
-		if err := s.m.SetLLMRecordEnabled(*req.LLMRecord); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-	}
-	changed := false
-	if req.LLMPoolEnabled != nil {
-		if err := s.m.SetLLMPoolEnabled(*req.LLMPoolEnabled); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		changed = true // the provider chain itself changes shape → rebuild
-	}
-	if req.LLMPoolBindFallback != nil {
-		if err := s.m.SetLLMPoolBindFallback(*req.LLMPoolBindFallback); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		changed = true
-	}
-	if req.LLMPoolEnabled != nil || req.LLMPoolBindFallback != nil {
-		// Pinned tasks' planner/worker and per-profile chat agents hold providers
-		// built under the OLD switch state — drop them so they pick up the new one.
-		s.invalidateProfileAgents()
-	}
-	if req.TaskIntelligence != nil || req.CredentialAgent != nil || req.CredentialTraffic != nil {
-		if err := s.m.pg.SetIntelligenceSettings(r.Context(), req.TaskIntelligence, req.CredentialAgent, req.CredentialTraffic); err != nil {
-			intelligenceError(w, err)
-			return
-		}
-	}
-	if req.TaskAutoTitle != nil {
-		if err := s.m.pg.SetBool(db.SettingTaskAutoTitle, *req.TaskAutoTitle); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-	}
-	if req.ChatAutoTitle != nil {
-		if err := s.m.pg.SetBool(db.SettingChatAutoTitle, *req.ChatAutoTitle); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-	}
-	if req.AgentTrafficBinding != nil {
-		if err := s.m.pg.SetBool(settingAgentTrafficBinding, *req.AgentTrafficBinding); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-	}
-	if req.BrowserScreenshot != nil {
-		if err := s.setReporterBrowserScreenshotVisibility(*req.BrowserScreenshot); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		if err := s.m.pg.SetBool(settingBrowserScreenshot, *req.BrowserScreenshot); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		// The reporter's MCP visibility and prompt are assembled when agents are
-		// built. Rebuild immediately so the setting applies to the next run,
-		// rather than only after a later unrelated LLM/settings change.
-		changed = true
-	}
-	if req.ScreenshotTimestamp != nil {
-		if err := s.m.pg.SetBool(settingScreenshotTimestamp, *req.ScreenshotTimestamp); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-	}
-	if req.OpsecEnabled != nil {
-		if err := s.m.pg.SetBool(settingOpsecEnabled, *req.OpsecEnabled); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-	}
-	if req.TrafficCapture != nil {
-		if err := s.m.SetTrafficEnabled(*req.TrafficCapture); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		changed = true
 	}
 	if req.TrafficExcludeHosts != nil {
-		// 格式错误属于客户端输入问题（400）；过滤在抓包层即时生效，无需重建 agent。
-		if err := s.m.SetTrafficExcludeHosts(*req.TrafficExcludeHosts); err != nil {
+		if err := ValidateTrafficExcludeHosts(*req.TrafficExcludeHosts); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
 	}
-	if req.GlobalProxy != nil {
-		globalProxyValue := strings.TrimSpace(*req.GlobalProxy)
-		if strings.Contains(globalProxyValue, "***") || strings.Contains(globalProxyValue, "******") {
-			globalProxyValue = s.m.GlobalProxy()
-		}
-		var proxyGuards map[string]proxyReconnectGuard
-		if globalProxyValue == "" {
-			proxyGuards = s.snapshotProxyReconnectGuards(false)
-		}
-		// Validation failure (bad scheme/host) is a client error, not a 500.
-		if err := s.m.SetGlobalProxy(globalProxyValue); err != nil {
-			writeErr(w, 400, err.Error())
-			return
-		}
-		if globalProxyValue == "" && (s.m.proxyPool == nil || len(s.m.proxyPoolEntries()) == 0) {
-			s.proxyReconnectSuccessWithGuards(proxyGuards, nil)
-		}
-	}
-	if req.ProxyReconnectMax != nil || req.ProxyReconnectInterval != nil {
-		if err := s.setProxyReconnectSettings(req.ProxyReconnectMax, req.ProxyReconnectInterval); err != nil {
-			writeErr(w, 400, err.Error())
-			return
-		}
+	if err := validateProxyReconnectSettings(req.ProxyReconnectMax, req.ProxyReconnectInterval); err != nil {
+		writeErr(w, 400, err.Error())
+		return
 	}
 	if req.ProxyRotateTimed != nil || req.ProxyRotateInterval != nil || req.ProxyRotateFailure != nil || req.ProxyRotateStrategy != nil || req.ProxyHealthThreshold != nil || req.ProxyHealthCooldown != nil || req.ProxyHealthInterval != nil {
 		timed, interval, onFailure, strategy := s.m.proxyRotateConfig()
@@ -4119,26 +3995,247 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if req.ProxyHealthInterval != nil {
 			healthInterval = time.Duration(*req.ProxyHealthInterval) * time.Second
 		}
-		if err := s.m.SetProxyPoolSettings(timed, int(interval/time.Second), onFailure, strategy, threshold, int(cooldown/time.Second), int(healthInterval/time.Second)); err != nil {
+		poolSettings = &proxyPoolSettingsUpdate{
+			timed:          timed,
+			interval:       int(interval / time.Second),
+			onFailure:      onFailure,
+			strategy:       strategy,
+			threshold:      threshold,
+			cooldown:       int(cooldown / time.Second),
+			healthInterval: int(healthInterval / time.Second),
+		}
+		if err := validateProxyPoolSettings(poolSettings.interval, poolSettings.strategy, poolSettings.threshold, poolSettings.cooldown, poolSettings.healthInterval); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		select {
-		case s.proxyPoolWake <- struct{}{}:
-		default:
+	}
+	// 写入分两段。第一段只做纯计算：把本次保存涉及的所有 settings 行收进 writes，
+	// 由同一个事务一次提交，任何一步失败都整体回滚，不会留下半套配置。第二段在提交
+	// 之后才把已落库的值镜像到内存/抓包/MCP/agent；它只读数据库，不再决定写什么。
+	writes := make(map[string]string, 32)
+	var apply settingsApply
+	changed := false
+	intelligence := req.TaskIntelligence != nil || req.CredentialAgent != nil || req.CredentialTraffic != nil
+
+	if req.ConstraintsInjectPlanner != nil {
+		writes[settingConstraintsInjectPlanner] = strconv.FormatBool(*req.ConstraintsInjectPlanner)
+	}
+	if req.ConstraintsInjectWorker != nil {
+		writes[settingConstraintsInjectWorker] = strconv.FormatBool(*req.ConstraintsInjectWorker)
+	}
+	if req.NoaCompaction != nil {
+		// 每 run 读的解析器,切换即时对之后启动的 run 生效,无需 applyLLM 重建。
+		writes[settingNoaCompaction] = strconv.FormatBool(*req.NoaCompaction)
+	}
+	// 推送全局项:投递引擎每轮重新读取,所以即时生效、无需重启。
+	if req.NotifyEnabled != nil {
+		writes[settingNotifyEnabled] = strconv.FormatBool(*req.NotifyEnabled)
+	}
+	if req.NotifyBaseURL != nil {
+		writes[settingNotifyPublicBaseURL] = *req.NotifyBaseURL
+	}
+	if req.NotifyDigestMins != nil {
+		writes[settingNotifyDigestMinutes] = strconv.Itoa(*req.NotifyDigestMins)
+	}
+	// A non-empty pool list takes precedence when both fields are present and
+	// synchronizes workers to its total. An empty list clears pools; when workers
+	// is also present it sets the legacy count for the newly restored legacy mode.
+	if req.WorkerPools != nil {
+		pools := *req.WorkerPools
+		if pools == nil {
+			pools = []WorkerPool{}
 		}
+		b, err := json.Marshal(pools)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		workerCount := s.m.Workers()
+		if len(pools) > 0 {
+			workerCount = 0
+			for _, pool := range pools {
+				workerCount += pool.Workers
+			}
+		} else if req.Workers != nil {
+			workerCount = *req.Workers
+		}
+		writes[settingWorkerPools] = string(b)
+		writes[settingWorkers] = strconv.Itoa(workerCount)
+	} else if req.Workers != nil {
+		// An omitted worker_pools field leaves the saved mode unchanged. If a
+		// non-empty pool configuration is already saved, its total remains the
+		// authoritative concurrency and workers is deliberately ignored.
+		if len(s.m.WorkerPools()) == 0 {
+			writes[settingWorkers] = strconv.Itoa(*req.Workers)
+		}
+	}
+	if req.ConcurrencyEnabled != nil || req.ConcurrencyLimit != nil {
+		// 部分 PUT:未给的字段用当前值兜底,避免只改一个把另一个重置。
+		curOn, curLimit := s.m.ConcurrencyLimit()
+		if curLimit == 0 {
+			curLimit = defaultConcurrencyLimit
+		}
+		on, limit := curOn, curLimit
+		if req.ConcurrencyEnabled != nil {
+			on = *req.ConcurrencyEnabled
+		}
+		if req.ConcurrencyLimit != nil {
+			limit = *req.ConcurrencyLimit
+		}
+		if limit < 1 {
+			limit = defaultConcurrencyLimit
+		}
+		writes[settingConcurrencyLimit] = strconv.Itoa(limit)
+		writes[settingConcurrencyOn] = strconv.FormatBool(on)
+		// 提交后立即协调一次:关闭时放行全部排队,调高上限时补位启动,不必等下一个 tick。
+		apply.reconcile = true
+	}
+	if req.PythonInterp != nil {
+		writes[settingPythonInterp] = strings.TrimSpace(*req.PythonInterp)
+	}
+	if req.LLMRecord != nil {
+		// 录制器每次调用读取该标志，切换即时生效，无需 applyLLM 重建。
+		writes[settingLLMRecord] = strconv.FormatBool(*req.LLMRecord)
+		apply.llmRecord = true
+	}
+	if req.LLMPoolEnabled != nil {
+		writes[settingLLMPoolOn] = strconv.FormatBool(*req.LLMPoolEnabled)
+		changed = true // the provider chain itself changes shape → rebuild
+	}
+	if req.LLMPoolBindFallback != nil {
+		writes[settingLLMPoolBindFallback] = strconv.FormatBool(*req.LLMPoolBindFallback)
+		changed = true
+	}
+	if req.LLMPoolEnabled != nil || req.LLMPoolBindFallback != nil {
+		// Pinned tasks' planner/worker and per-profile chat agents hold providers
+		// built under the OLD switch state — drop them so they pick up the new one.
+		apply.invalidateProfiles = true
+	}
+	if req.TaskAutoTitle != nil {
+		writes[db.SettingTaskAutoTitle] = strconv.FormatBool(*req.TaskAutoTitle)
+	}
+	if req.ChatAutoTitle != nil {
+		writes[db.SettingChatAutoTitle] = strconv.FormatBool(*req.ChatAutoTitle)
+	}
+	if req.AgentTrafficBinding != nil {
+		writes[settingAgentTrafficBinding] = strconv.FormatBool(*req.AgentTrafficBinding)
+	}
+	if req.BrowserScreenshot != nil {
+		writes[settingBrowserScreenshot] = strconv.FormatBool(*req.BrowserScreenshot)
+		// The reporter's MCP visibility and the launch args are written in the same
+		// transaction below; the prompt is assembled when agents are built.
+		changed = true
+	}
+	if req.ScreenshotTimestamp != nil {
+		writes[settingScreenshotTimestamp] = strconv.FormatBool(*req.ScreenshotTimestamp)
+	}
+	if req.OpsecEnabled != nil {
+		writes[settingOpsecEnabled] = strconv.FormatBool(*req.OpsecEnabled)
+	}
+	if req.TrafficCapture != nil {
+		writes[settingTrafficCapture] = strconv.FormatBool(*req.TrafficCapture)
+		apply.traffic = true
+		changed = true
+	}
+	if req.TrafficExcludeHosts != nil {
+		// 格式错误属于客户端输入问题（400）；过滤在抓包层即时生效，无需重建 agent。
+		patterns, err := traffic.ParseExcludeHosts(*req.TrafficExcludeHosts)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writes[settingTrafficExcludeHosts] = strings.Join(patterns, "\n")
+		apply.excludeHosts, apply.hasExcludeHosts = patterns, true
+	}
+	if hasGlobalProxy && globalProxyMerged != "" {
+		// Validation failure (bad scheme/host) is a client error, not a 500. It runs
+		// before the pool check so a managed pool still rejects garbage input.
+		if _, err := traffic.ValidateProxyURL(globalProxyMerged); err != nil {
+			writeErr(w, 400, maskSecrets(err.Error()))
+			return
+		}
+	}
+	var globalProxyAfter *string // nil = legacy field unchanged
+	if hasGlobalProxy {
+		switch {
+		case len(s.m.proxyPoolEntries()) > 0:
+			// The legacy field is a read-only echo once a pool exists. Pool API
+			// operations are the sole authority for health, enablement and switching,
+			// so a managed pool is also never emptied from here.
+		case globalProxyMerged == "":
+			writes[settingGlobalProxy] = ""
+			apply.proxyChanged = true
+			cleared := ""
+			globalProxyAfter = &cleared
+			// Tasks paused waiting for egress resume once it is direct again.
+			apply.proxyGuards = s.snapshotProxyReconnectGuards(false)
+		case s.m.proxyPool == nil:
+			writes[settingGlobalProxy] = globalProxyMerged
+			apply.proxyChanged = true
+			merged := globalProxyMerged
+			globalProxyAfter = &merged
+		default:
+			// A legacy proxy becomes the pool's first entry, so the same three rows
+			// startup writes are persisted here rather than diverging later.
+			legacyWrites, err := legacyProxyPoolWrites(globalProxyMerged)
+			if err != nil {
+				writeErr(w, 500, err.Error())
+				return
+			}
+			for k, v := range legacyWrites {
+				writes[k] = v
+			}
+			apply.promoteProxy = globalProxyMerged
+			apply.proxyChanged = true
+			merged := globalProxyMerged
+			globalProxyAfter = &merged
+		}
+	}
+	// The browser MCP's proxy args are a projection of the capture/egress state,
+	// so compute them from the values this save commits and write them in the same
+	// transaction — the projection can never disagree with the saved config.
+	projectMCP := req.TrafficCapture != nil || req.BrowserScreenshot != nil || apply.proxyChanged
+	mcpScreenshot := s.m.pg.GetBool(settingBrowserScreenshot, false)
+	if req.BrowserScreenshot != nil {
+		mcpScreenshot = *req.BrowserScreenshot
+	}
+	var mcpProxy, mcpCA string
+	if projectMCP {
+		captureAfter := s.m.TrafficEnabled()
+		if req.TrafficCapture != nil {
+			captureAfter = *req.TrafficCapture
+		}
+		globalAfterValue := s.m.GlobalProxy()
+		if globalProxyAfter != nil {
+			globalAfterValue = *globalProxyAfter
+		}
+		poolAfter := s.m.proxyPoolConfigured.Load() || apply.promoteProxy != ""
+		mcpProxy = s.m.plannedProxyAddr(captureAfter, globalAfterValue, poolAfter)
+		mcpCA = s.m.plannedCACert(captureAfter)
+	}
+	if req.ProxyReconnectMax != nil || req.ProxyReconnectInterval != nil {
+		if req.ProxyReconnectMax != nil {
+			writes[settingProxyReconnectMax] = strconv.Itoa(*req.ProxyReconnectMax)
+		}
+		if req.ProxyReconnectInterval != nil {
+			writes[settingProxyReconnectInterval] = strconv.Itoa(*req.ProxyReconnectInterval)
+		}
+	}
+	if poolSettings != nil {
+		writes[settingProxyRotateTimed] = strconv.FormatBool(poolSettings.timed)
+		writes[settingProxyRotateInterval] = strconv.Itoa(poolSettings.interval)
+		writes[settingProxyRotateFailure] = strconv.FormatBool(poolSettings.onFailure)
+		writes[settingProxyRotateStrategy] = poolSettings.strategy
+		writes[settingProxyHealthThreshold] = strconv.Itoa(poolSettings.threshold)
+		writes[settingProxyHealthCooldown] = strconv.Itoa(poolSettings.cooldown)
+		writes[settingProxyHealthInterval] = strconv.Itoa(poolSettings.healthInterval)
+		apply.wakePool = true
 	}
 	if req.EgressProbeURL != nil {
-		if err := s.m.pg.SetSetting(settingEgressProbeURL, *req.EgressProbeURL); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		writes[settingEgressProbeURL] = *req.EgressProbeURL
 	}
 	if req.ShowEgressIP != nil {
-		if err := s.m.pg.SetBool(settingShowEgressIP, *req.ShowEgressIP); err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
+		writes[settingShowEgressIP] = strconv.FormatBool(*req.ShowEgressIP)
 	}
 	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.DeepSeekSearchKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.
@@ -4149,25 +4246,90 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if req.WebSearchBackend != nil {
 			backend = *req.WebSearchBackend
 		}
-		if req.WebSearchProxy != nil && (strings.Contains(*req.WebSearchProxy, "***") || strings.Contains(*req.WebSearchProxy, "******")) {
-			_, _, _, _, savedSearchProxy := s.m.WebSearch()
-			req.WebSearchProxy = &savedSearchProxy
-		}
-		if err := s.m.SetWebSearch(on, backend, req.BraveKey, req.TavilyKey, req.WebSearchProxy); err != nil {
-			writeErr(w, 500, err.Error())
+		backend, err := normalizeWebSearchBackend(backend)
+		if err != nil {
+			writeErr(w, 400, err.Error())
 			return
 		}
+		writes[settingWebSearchOn] = strconv.FormatBool(on)
+		writes[settingWebSearchBackend] = backend
+		if req.BraveKey != nil {
+			writes[settingBraveKey] = *req.BraveKey
+		}
+		if req.TavilyKey != nil {
+			writes[settingTavilyKey] = *req.TavilyKey
+		}
+		if req.WebSearchProxy != nil {
+			writes[settingWebSearchProxy] = strings.TrimSpace(webSearchProxyMerged)
+		}
+		apply.webSearch = true
 		changed = true
 	}
 	if req.DeepSeekSearchKey != nil {
-		if strings.Contains(*req.DeepSeekSearchKey, "***") {
-			*req.DeepSeekSearchKey = s.m.deepSeekSearchKey()
+		// The form echoes a masked key; splice the saved one back in.
+		key := *req.DeepSeekSearchKey
+		if strings.Contains(key, "***") {
+			key = s.m.deepSeekSearchKey()
 		}
-		if err := s.m.setDeepSeekSearchKey(*req.DeepSeekSearchKey); err != nil {
+		writes[settingDeepSeekSearchKey] = strings.TrimSpace(key)
+		apply.webSearch = true
+		changed = true
+	}
+
+	if len(writes) > 0 || intelligence || projectMCP {
+		err := s.m.pg.WithSettingsTx(r.Context(), func(tx *sql.Tx) error {
+			if intelligence {
+				// Resolve first: it takes the advisory lock before any row is
+				// touched, matching the credential job's lock order (lock, then
+				// read) so the two can never deadlock. The dependency rules read
+				// the stored switches in the same transaction, so the three keys
+				// never land half-applied.
+				values, err := s.m.pg.ResolveIntelligenceSettingsTx(r.Context(), tx, req.TaskIntelligence, req.CredentialAgent, req.CredentialTraffic)
+				if err != nil {
+					return err
+				}
+				for k, v := range values {
+					writes[k] = v
+				}
+			}
+			if projectMCP {
+				// Written before the settings rows so the lock order matches the
+				// proxy-pool API (mcp_servers, then settings).
+				if err := syncBrowserMCPProxyTx(r.Context(), tx, mcpProxy, mcpCA, mcpScreenshot); err != nil {
+					return err
+				}
+			}
+			if err := s.m.pg.WriteSettingsTx(r.Context(), tx, writes); err != nil {
+				return err
+			}
+			if req.BrowserScreenshot != nil {
+				return s.setReporterBrowserScreenshotVisibilityTx(tx, *req.BrowserScreenshot)
+			}
+			return nil
+		})
+		if err != nil {
+			if errors.Is(err, db.ErrIntelligenceInvalid) {
+				intelligenceError(w, err)
+				return
+			}
 			writeErr(w, 500, err.Error())
 			return
 		}
-		changed = true
+	}
+
+	// ---- 提交成功之后：只做内存/运行时镜像，不再写决定配置状态的字段 ----
+	s.applySettingsRuntime(apply)
+	if apply.proxyGuards != nil {
+		s.proxyReconnectSuccessWithGuards(apply.proxyGuards, nil)
+	}
+	if apply.reconcile {
+		go s.reconcileConcurrency()
+	}
+	if apply.wakePool {
+		select {
+		case s.proxyPoolWake <- struct{}{}:
+		default:
+		}
 	}
 	if changed {
 		// rebuild agents so the new proxy/tools/prompt/web-search take hold (only if LLM configured).
@@ -4176,12 +4338,147 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		s.cfgMu.Unlock()
 		if on {
 			if err := s.applyLLM(cfg); err != nil {
-				writeErr(w, 500, err.Error())
+				// 配置已经提交成功，重建失败时如实说清楚，避免让用户以为没保存。
+				writeErr(w, 500, "配置已保存，但 Agent 重建失败，请稍后重试："+err.Error())
 				return
 			}
 		}
 	}
 	writeJSON(w, 200, s.settingsPayload())
+}
+
+// settingsApply names the runtime mirrors a committed settings save must
+// refresh. The database is the source of truth; these flags only say which
+// projections need re-reading, so a failed save never touches running state.
+type settingsApply struct {
+	traffic            bool
+	llmRecord          bool
+	webSearch          bool
+	excludeHosts       []string
+	hasExcludeHosts    bool
+	promoteProxy       string
+	proxyChanged       bool
+	proxyGuards        map[string]proxyReconnectGuard
+	wakePool           bool
+	reconcile          bool
+	invalidateProfiles bool
+}
+
+// applySettingsRuntime mirrors a committed settings save into the running
+// process. Mirror failures are logged rather than returned: the values are
+// already durable and every mirror self-heals on the next save or restart.
+func (s *Server) applySettingsRuntime(a settingsApply) {
+	m := s.m
+	if a.invalidateProfiles {
+		s.invalidateProfileAgents()
+	}
+	var promotedFrom string
+	if a.promoteProxy != "" {
+		promotedFrom = m.GlobalProxy()
+	}
+	if a.traffic || a.llmRecord || a.webSearch || a.proxyChanged {
+		m.mu.Lock()
+		if a.traffic {
+			m.trafficOn = m.pg.GetBool(settingTrafficCapture, false)
+		}
+		if a.llmRecord {
+			m.llmRecOn = m.pg.GetBool(settingLLMRecord, false)
+		}
+		if a.webSearch {
+			m.loadWebSearchSettings()
+		}
+		if a.proxyChanged {
+			m.loadGlobalProxySetting()
+		}
+		m.mu.Unlock()
+	}
+	if a.promoteProxy != "" && m.proxyPool != nil {
+		// A legacy proxy becomes the pool's single entry, mirroring initProxyPool.
+		entries, active := legacyProxyPool(a.promoteProxy)
+		m.proxyPool.mu.Lock()
+		m.proxyPool.entries, m.proxyPool.active = entries, active
+		m.proxyPoolConfigured.Store(true)
+		if promotedFrom != a.promoteProxy {
+			m.proxyPool.logs = append(m.proxyPool.logs, ProxySwitchLog{At: time.Now(), From: maskSecrets(promotedFrom), To: maskSecrets(a.promoteProxy), Reason: "manual"})
+			if len(m.proxyPool.logs) > 20 {
+				m.proxyPool.logs = m.proxyPool.logs[len(m.proxyPool.logs)-20:]
+			}
+		}
+		m.proxyPool.mu.Unlock()
+	}
+	if a.traffic || a.proxyChanged {
+		if m.traffic != nil {
+			if err := m.traffic.SetUpstreamProxy(m.GlobalProxy()); err != nil {
+				log.Printf("[proxy] 全局代理 %q 无效，已忽略: %v", m.GlobalProxy(), err)
+			}
+		}
+	}
+	if a.hasExcludeHosts {
+		m.mu.RLock()
+		tr := m.traffic
+		m.mu.RUnlock()
+		if tr != nil {
+			tr.SetExcludeHosts(a.excludeHosts)
+		}
+	}
+}
+
+// syncBrowserMCPProxyTx reconciles the seeded browser MCP's proxy args + CA env
+// with values computed for the save in flight, inside the same transaction. It
+// (and only it) decides the args for a settings save, so the derived row can
+// never disagree with the settings that justified it. A deleted/renamed browser
+// MCP is left alone.
+func syncBrowserMCPProxyTx(ctx context.Context, tx *sql.Tx, proxy, ca string, screenshot bool) error {
+	var srv db.MCPServer
+	var args, env []byte
+	err := tx.QueryRowContext(ctx, `SELECT id,name,transport,COALESCE(command,''),args,env,COALESCE(url,''),enabled,insecure
+FROM mcp_servers WHERE name=$1`, browserMCPName).Scan(&srv.ID, &srv.Name, &srv.Transport, &srv.Command, &args, &env, &srv.URL, &srv.Enabled, &srv.Insecure)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	argsList := ensureBrowserMCPArgs(stripProxyArgs(decodeStrSlice(args)), screenshot)
+	envMap := decodeStrMap(env)
+	delete(envMap, "NODE_EXTRA_CA_CERTS")
+	if proxy != "" {
+		argsList = append(argsList, "--proxy-server", proxy)
+		if ca != "" {
+			envMap["NODE_EXTRA_CA_CERTS"] = ca
+		}
+	}
+	srv.Args = encodeJSON(argsList)
+	srv.Env = encodeJSON(envMap)
+	if screenshot {
+		// A persisted screenshot opt-in must survive even if an older database
+		// had the seeded MCP disabled.
+		srv.Enabled = true
+	}
+	_, err = db.SaveMCPTx(tx, &srv)
+	return err
+}
+
+// setReporterBrowserScreenshotVisibilityTx is the transactional form of
+// setReporterBrowserScreenshotVisibility for putSettings: the permission row
+// joins the caller's settings transaction instead of landing separately.
+func (s *Server) setReporterBrowserScreenshotVisibilityTx(tx *sql.Tx, enabled bool) error {
+	reporter, err := s.m.pg.GetAgentByKey("reporter")
+	if err != nil || reporter == nil {
+		return err
+	}
+	servers, err := s.m.pg.ListMCP()
+	if err != nil {
+		return err
+	}
+	for _, server := range servers {
+		if server.Name == browserMCPName {
+			return db.ToggleVisibilityTx(tx, reporter.ID, "mcp", server.ID, enabled)
+		}
+	}
+	// The built-in browser MCP may be deleted by an administrator. Keep the
+	// setting writable so it takes effect automatically if the server returns.
+	return nil
 }
 
 // setReporterBrowserScreenshotVisibility keeps the report writer's browser MCP
@@ -4235,13 +4532,24 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	_, backend, storedBraveKey, storedTavilyKey, _ := s.m.WebSearch()
-	if strings.TrimSpace(req.Backend) != "" {
-		backend = req.Backend
+	_, backend, storedBraveKey, storedTavilyKey, storedProxy := s.m.WebSearch()
+	if b := strings.TrimSpace(req.Backend); b != "" {
+		normalized, err := normalizeWebSearchBackend(b)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		backend = normalized
 	}
-	// Proxy is taken from the form as-is (empty = direct), so testing reflects exactly
-	// what's shown — including an intentional "clear proxy to test direct" before saving.
-	proxy := strings.TrimSpace(req.Proxy)
+	// Proxy is taken from the form (empty = direct), so testing reflects exactly
+	// what's shown — including an intentional "clear proxy to test direct" before
+	// saving. The form echoes masked credentials, which must be spliced from the
+	// saved value; otherwise every authenticated proxy tests as an auth failure.
+	proxy, err := mergeMaskedProxyURL(req.Proxy, storedProxy)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	// API keys are secrets the form omits when already saved, so fall back to stored.
 	braveKey := storedBraveKey
 	if strings.TrimSpace(req.BraveKey) != "" {

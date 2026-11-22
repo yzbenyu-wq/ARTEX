@@ -41,7 +41,7 @@ func TestEgressProbeSettingsPersistence(t *testing.T) {
 		cancel()
 		s.Close()
 	}()
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,6 +152,28 @@ func TestEgressProbeSavedAndTemporaryURLs(t *testing.T) {
 	s.testEgressProxy(w, httptest.NewRequest(http.MethodPost, "/api/settings/proxy/test", strings.NewReader(`{"probe_url":"http://127.0.0.1"}`)))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("invalid probe status=%d", w.Code)
+	}
+}
+
+func TestEgressProbeMergesMaskedProxyCredentials(t *testing.T) {
+	m := proxyTestManager(t)
+	m.globalProxy = "http://old:secret@old.example:8080"
+	s := &Server{m: m}
+	var probed string
+	s.proxyProbe = func(_ context.Context, addr, _ string, _ []string, _ time.Duration) egressProbeResult {
+		if addr != "" {
+			probed = addr
+		}
+		return egressProbeResult{OK: true, ExitIP: "203.0.113.7", Probes: []egressAttempt{}}
+	}
+	w := httptest.NewRecorder()
+	s.testEgressProxy(w, httptest.NewRequest(http.MethodPost, "/api/settings/proxy/test",
+		strings.NewReader(`{"global_proxy":"http://***@new.example:9090"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if probed != "http://old:secret@new.example:9090" {
+		t.Fatalf("probed proxy=%q, want new host with saved credentials", probed)
 	}
 }
 

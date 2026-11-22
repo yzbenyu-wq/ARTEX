@@ -216,6 +216,7 @@ func (s *Server) toolCreateCustomTool() actool.CoreTool {
 			if err := s.m.pg.CreateCustomTool(toDBTool(a)); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
+			s.refreshToolPolicy()
 			return actool.Text("custom tool created: " + a.Key), nil
 		})
 }
@@ -239,6 +240,7 @@ func (s *Server) toolUpdateCustomTool() actool.CoreTool {
 			if err := s.m.pg.UpdateCustomTool(toDBTool(a)); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
+			s.refreshToolPolicy()
 			return actool.Text("custom tool updated: " + a.Key), nil
 		})
 }

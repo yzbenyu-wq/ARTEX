@@ -295,7 +295,7 @@ func TestTaskFilesAuthAndHead(t *testing.T) {
 			t.Fatalf("unauthenticated %s: %d", action, rec.Code)
 		}
 	}
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

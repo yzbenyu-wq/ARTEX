@@ -26,6 +26,7 @@ func TestExpandWorkerSlotsLegacy(t *testing.T) {
 		{"configured", 2, 2},
 		{"zero defaults", 0, 3},
 		{"negative defaults", -1, 3},
+		{"over cap clamps", 100000, 50},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			slots, err := ExpandWorkerSlots(nil, tc.count)
@@ -178,6 +179,24 @@ func TestWorkerPoolSettingsRoundTrip(t *testing.T) {
 	}
 	if pools, ok := cleared["worker_pools"].([]any); !ok || pools == nil || len(pools) != 0 {
 		t.Fatalf("GET cleared worker_pools=%#v, want empty array", cleared["worker_pools"])
+	}
+
+	// The legacy count is capped: a typo must not turn into thousands of workers
+	// (and a huge allocation) at the next task start.
+	if err := m.pg.SetSetting(settingWorkers, "100000"); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Workers(); got != maxWorkers {
+		t.Fatalf("Workers()=%d, want clamp to %d", got, maxWorkers)
+	}
+	tooMany := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(`{"workers":100000}`))
+	tooManyResult := httptest.NewRecorder()
+	s.putSettings(tooManyResult, tooMany)
+	if tooManyResult.Code != http.StatusBadRequest {
+		t.Fatalf("oversized workers status=%d body=%s", tooManyResult.Code, tooManyResult.Body.String())
+	}
+	if got := m.Workers(); got != maxWorkers {
+		t.Fatalf("oversized PUT changed workers to %d", got)
 	}
 }
 

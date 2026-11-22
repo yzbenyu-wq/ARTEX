@@ -447,6 +447,14 @@ func ValidateProxyURL(raw string) (*url.URL, error) {
 	if u.Host == "" {
 		return nil, fmt.Errorf("代理 %q 缺少主机地址", raw)
 	}
+	// net/url only checks that the port is numeric; 0 and 65536..99999 parse fine
+	// but can never connect, so validate the range here. A missing port is left
+	// to the scheme's default.
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("代理端口 %q 无效(必须在 1..65535)", p)
+		}
+	}
 	return u, nil
 }
 

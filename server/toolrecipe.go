@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
@@ -34,6 +35,73 @@ import (
 
 var reRecipeSpan = regexp.MustCompile(`\{([A-Za-z0-9_]+)\}`)
 var reRecipeExact = regexp.MustCompile(`^\{([A-Za-z0-9_]+)\}$`)
+
+const (
+	recipeHeadBytes = 4 << 20
+	recipeTailBytes = 256 << 10
+	recipeWaitDelay = 5 * time.Second
+)
+
+// cappedOutput keeps the head and tail of a child's combined output so a runaway
+// scanner cannot exhaust memory; the middle is replaced with a marker.
+type cappedOutput struct {
+	mu      sync.Mutex
+	head    []byte
+	tail    []byte
+	headMax int
+	tailMax int
+	dropped int64
+}
+
+func newCappedOutput(headMax, tailMax int) *cappedOutput {
+	return &cappedOutput{headMax: headMax, tailMax: tailMax}
+}
+
+func (c *cappedOutput) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := len(p)
+	if room := c.headMax - len(c.head); room > 0 {
+		take := room
+		if take > len(p) {
+			take = len(p)
+		}
+		c.head = append(c.head, p[:take]...)
+		p = p[take:]
+	}
+	if len(p) == 0 || c.tailMax <= 0 {
+		c.dropped += int64(len(p))
+		return n, nil
+	}
+	c.tail = append(c.tail, p...)
+	if over := len(c.tail) - c.tailMax; over > 0 {
+		c.tail = c.tail[over:]
+		c.dropped += int64(over)
+	}
+	return n, nil
+}
+
+func (c *cappedOutput) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dropped == 0 {
+		return string(c.head) + string(c.tail)
+	}
+	return string(c.head) + fmt.Sprintf("\n... [输出过大，中间省略 %d 字节] ...\n", c.dropped) + string(c.tail)
+}
+
+// staticFirstArg reports whether the first non-empty argv group starts with a
+// literal executable name. When ToolMeta.Binary is empty the executor falls back
+// to argv[0], so a placeholder there would let the caller choose the binary.
+func staticFirstArg(groups []recipeGroup) bool {
+	for _, g := range groups {
+		if len(g) == 0 {
+			continue
+		}
+		return !reRecipeSpan.MatchString(g[0])
+	}
+	return false
+}
 
 // recipeProxyEnvKeys are removed from the child env for proxy_mode=none, so a
 // raw-socket tool never accidentally tunnels through HTTP_PROXY inherited from
@@ -278,6 +346,9 @@ func (s *Server) runRecipeTool(ctx context.Context, execRaw json.RawMessage, par
 		return actool.Errorf(err.Error()), nil
 	}
 	bin := strings.TrimSpace(meta.Binary)
+	if bin == "" && !staticFirstArg(spec.Argv) {
+		return actool.Errorf("recipe 未配置 binary：argv 首项必须是固定可执行名，不能含 {param}"), nil
+	}
 	if bin == "" {
 		bin = argv[0]
 		argv = argv[1:]
@@ -295,13 +366,16 @@ func (s *Server) runRecipeTool(ctx context.Context, execRaw json.RawMessage, par
 	cmd := exec.CommandContext(runCtx, binPath, argv...)
 	cmd.Dir = workDir
 	cmd.Env = recipeEnv(sessionEnv, mode, proxy)
+	cmd.WaitDelay = recipeWaitDelay
 	if strings.TrimSpace(spec.Stdin) != "" {
 		if stdin, ok := renderRecipeItem(strings.TrimSpace(spec.Stdin), params, proxy); ok && stdin != "" {
 			cmd.Stdin = strings.NewReader(stdin)
 		}
 	}
-	out, runErr := cmd.CombinedOutput()
-	body := string(out)
+	out := newCappedOutput(recipeHeadBytes, recipeTailBytes)
+	cmd.Stdout, cmd.Stderr = out, out
+	runErr := cmd.Run()
+	body := out.String()
 	if runCtx.Err() == context.DeadlineExceeded {
 		body += "\n... [超时终止] ..."
 		return actool.Errorf(actool.Capture(tc, body)), nil

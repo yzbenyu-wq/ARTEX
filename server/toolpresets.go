@@ -56,7 +56,7 @@ func loadToolPresets() ([]toolPreset, error) {
 			return nil, fmt.Errorf("预置工具 %s 的 proxy_mode 不合法: %q", p.Key, p.ProxyMode)
 		}
 		p.ProxyMode = mode
-		if err := validateToolExec("recipe", p.Schema, p.Exec); err != nil {
+		if err := validateToolExec("recipe", p.Schema, p.Exec, p.Binary); err != nil {
 			return nil, fmt.Errorf("预置工具 %s: %w", p.Key, err)
 		}
 	}
@@ -164,6 +164,9 @@ func (s *Server) pgInstallToolPresets(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		installed = append(installed, key)
+	}
+	if len(installed) > 0 {
+		s.refreshToolPolicy()
 	}
 	writeJSON(w, 200, map[string]any{"installed": installed, "skipped": skipped, "errors": errs})
 }

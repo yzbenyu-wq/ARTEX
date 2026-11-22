@@ -51,6 +51,9 @@ func normalizeToolMeta(m ToolMeta) ToolMeta {
 		m.Source = "custom"
 	}
 	m.VersionCmd = strings.TrimSpace(m.VersionCmd)
+	if len(m.VersionCmd) > 512 {
+		m.VersionCmd = m.VersionCmd[:512]
+	}
 	m.Homepage = strings.TrimSpace(m.Homepage)
 	return m
 }

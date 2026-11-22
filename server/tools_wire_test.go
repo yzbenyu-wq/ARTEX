@@ -107,3 +107,41 @@ func mustJSON(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
 }
+
+// A failed catalog read must not widen the tool surface: with no cached rows the
+// resolver returns nothing (agents lose tools for that run) instead of passing
+// disabled/unbound custom tools through.
+func TestToolResolveFailsClosedWithoutCache(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skipf("no database config (%v) — skipping", err)
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	pg.Close() // every ListTools call now fails
+	wireTools(pg, nil)
+	t.Cleanup(func() { agent.ToolResolve = nil })
+
+	if got := agent.ToolResolve(context.Background(), "worker", actool.DefaultTools()); got != nil {
+		t.Fatalf("fail-open: resolver returned %d tools without a catalog", len(got))
+	}
+}
+
+// After one successful read, a later catalog failure reuses the last-known rows
+// so agents keep working against the same surface.
+func TestToolResolveReusesCachedCatalog(t *testing.T) {
+	pg := openToolboxDB(t)
+	wireTools(pg, nil)
+	t.Cleanup(func() { agent.ToolResolve = nil })
+	ctx := context.Background()
+	base := actool.DefaultTools()
+
+	first := agent.ToolResolve(ctx, "worker", base)
+	pg.Close()
+	second := agent.ToolResolve(ctx, "worker", base)
+	if second == nil || len(second) < len(base) {
+		t.Fatalf("cached catalog not reused: first=%d second=%d base=%d", len(first), len(second), len(base))
+	}
+}

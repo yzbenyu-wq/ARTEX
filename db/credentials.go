@@ -69,19 +69,29 @@ func (d *DB) SetCredentialAgentSettings(ctx context.Context, enabled, binding *b
 	return d.SetIntelligenceSettings(ctx, nil, enabled, binding)
 }
 func (d *DB) SetIntelligenceSettings(ctx context.Context, recording, enabled, binding *bool) error {
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(7337741006)`); err != nil {
-		return err
+	return d.WithSettingsTx(ctx, func(tx *sql.Tx) error {
+		values, err := d.ResolveIntelligenceSettingsTx(ctx, tx, recording, enabled, binding)
+		if err != nil {
+			return err
+		}
+		return d.WriteSettingsTx(ctx, tx, values)
+	})
+}
+
+// ResolveIntelligenceSettingsTx computes the three dependent switches from the
+// stored values plus the requested overrides, using tx for both the advisory
+// lock and the reads, and returns the values to persist. Callers that already
+// own a settings transaction merge the result into their batch so the whole
+// save stays atomic.
+func (d *DB) ResolveIntelligenceSettingsTx(ctx context.Context, tx *sql.Tx, recording, enabled, binding *bool) (map[string]string, error) {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(7337741006)`); err != nil {
+		return nil, err
 	}
 	record, on, bind := false, false, false
 	var value string
-	err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, SettingTaskIntelligence).Scan(&value)
+	err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, SettingTaskIntelligence).Scan(&value)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return nil, err
 	}
 	record = value == "true" || value == "1"
 	if recording != nil {
@@ -90,13 +100,13 @@ func (d *DB) SetIntelligenceSettings(ctx context.Context, recording, enabled, bi
 	value = ""
 	err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, SettingCredentialAgent).Scan(&value)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return nil, err
 	}
 	on = value == "true" || value == "1"
 	value = ""
 	err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, SettingCredentialTraffic).Scan(&value)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return nil, err
 	}
 	bind = value == "true" || value == "1"
 	if enabled != nil {
@@ -107,26 +117,25 @@ func (d *DB) SetIntelligenceSettings(ctx context.Context, recording, enabled, bi
 	}
 	if !record {
 		if enabled != nil && *enabled {
-			return fmt.Errorf("%w: 请先开启 Agent 自动记录，再开启 Agent 开关", ErrIntelligenceInvalid)
+			return nil, fmt.Errorf("%w: 请先开启 Agent 自动记录，再开启 Agent 开关", ErrIntelligenceInvalid)
 		}
 		if binding != nil && *binding {
-			return fmt.Errorf("%w: 请依次开启 Agent 自动记录和 Agent 开关", ErrIntelligenceInvalid)
+			return nil, fmt.Errorf("%w: 请依次开启 Agent 自动记录和 Agent 开关", ErrIntelligenceInvalid)
 		}
 		on = false
 		bind = false
 	}
 	if !on {
 		if binding != nil && *binding {
-			return fmt.Errorf("%w: 请先开启 Agent 开关，再启用绑定流量", ErrIntelligenceInvalid)
+			return nil, fmt.Errorf("%w: 请先开启 Agent 开关，再启用绑定流量", ErrIntelligenceInvalid)
 		}
 		bind = false
 	}
-	for key, val := range map[string]bool{SettingTaskIntelligence: record, SettingCredentialAgent: on, SettingCredentialTraffic: bind} {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`, key, strconv.FormatBool(val)); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return map[string]string{
+		SettingTaskIntelligence:  strconv.FormatBool(record),
+		SettingCredentialAgent:   strconv.FormatBool(on),
+		SettingCredentialTraffic: strconv.FormatBool(bind),
+	}, nil
 }
 
 // One durable lease per record, shared by all application processes. Errors do

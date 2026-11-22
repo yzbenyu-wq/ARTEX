@@ -351,6 +351,10 @@ const (
 	deepSeekWebSearchBackend = "deepseek"
 	// defaultWorkers is the concurrent work-agent count when the setting is unset.
 	defaultWorkers = 3
+	// maxWorkers caps the legacy worker count. Worker pools enforce the same total
+	// (ValidateWorkerPools); the legacy path must not be able to allocate more,
+	// since every worker is a goroutine plus its own LLM session.
+	maxWorkers = 50
 	// defaultConcurrencyLimit is the simultaneous-running-task cap when the feature
 	// is enabled but no explicit limit was saved.
 	defaultConcurrencyLimit = 5
@@ -434,6 +438,11 @@ func ExpandWorkerSlots(pools []WorkerPool, legacy int) ([]WorkerSlot, error) {
 		if legacy <= 0 {
 			legacy = defaultWorkers
 		}
+		// Old rows may hold values written before the cap existed; clamp on read
+		// rather than allocating whatever the database says.
+		if legacy > maxWorkers {
+			legacy = maxWorkers
+		}
 		slots := make([]WorkerSlot, legacy)
 		for i := range slots {
 			slots[i] = WorkerSlot{Name: fmt.Sprintf("work#%d", i+1)}
@@ -481,6 +490,8 @@ func (m *Manager) SetConcurrency(enabled bool, limit int) error {
 
 // Workers returns the configured concurrent work-agent count (default 3). Read
 // per-task at engine.Run, so a change applies to tasks started afterwards.
+// Values above maxWorkers (possible in rows saved by older builds) are clamped
+// so what the UI reports matches what the engine will actually start.
 func (m *Manager) Workers() int {
 	v, ok, err := m.pg.GetSetting(settingWorkers)
 	if err != nil || !ok {
@@ -489,6 +500,9 @@ func (m *Manager) Workers() int {
 	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil || n <= 0 {
 		return defaultWorkers
+	}
+	if n > maxWorkers {
+		return maxWorkers
 	}
 	return n
 }
@@ -508,10 +522,9 @@ func (m *Manager) WorkerPools() []WorkerPool {
 	return pools
 }
 
-// SetWorkerPools validates profile references at save time and atomically
-// synchronizes the legacy workers setting with the pool total. An empty slice
-// restores legacy mode; an optional legacy count is used when clearing pools.
-func (m *Manager) SetWorkerPools(pools []WorkerPool, legacyWorkers ...int) error {
+// ValidateWorkerPoolSelection checks a pools/legacy selection without writing
+// anything, so callers can reject a bad form before persisting other fields.
+func (m *Manager) ValidateWorkerPoolSelection(pools []WorkerPool, legacyWorkers ...int) error {
 	if pools == nil {
 		pools = []WorkerPool{}
 	}
@@ -531,6 +544,23 @@ func (m *Manager) SetWorkerPools(pools []WorkerPool, legacyWorkers ...int) error
 				return pgdb.ErrJevProfileJudgeOnly
 			}
 		}
+		return nil
+	}
+	if len(legacyWorkers) > 0 {
+		return validateWorkerCount(legacyWorkers[0])
+	}
+	return nil
+}
+
+// SetWorkerPools validates profile references at save time and atomically
+// synchronizes the legacy workers setting with the pool total. An empty slice
+// restores legacy mode; an optional legacy count is used when clearing pools.
+func (m *Manager) SetWorkerPools(pools []WorkerPool, legacyWorkers ...int) error {
+	if pools == nil {
+		pools = []WorkerPool{}
+	}
+	if err := m.ValidateWorkerPoolSelection(pools, legacyWorkers...); err != nil {
+		return err
 	}
 	b, err := json.Marshal(pools)
 	if err != nil {
@@ -543,9 +573,6 @@ func (m *Manager) SetWorkerPools(pools []WorkerPool, legacyWorkers ...int) error
 			workerCount += pool.Workers
 		}
 	} else if len(legacyWorkers) > 0 {
-		if legacyWorkers[0] <= 0 {
-			return fmt.Errorf("workers 必须 >0")
-		}
 		workerCount = legacyWorkers[0]
 	}
 	return m.pg.SetSettingsAtomic(context.Background(), map[string]string{
@@ -554,12 +581,20 @@ func (m *Manager) SetWorkerPools(pools []WorkerPool, legacyWorkers ...int) error
 	})
 }
 
-// SetWorkers persists the concurrent work-agent count. Values <=0 are rejected.
+// SetWorkers persists the concurrent work-agent count. Values outside 1..maxWorkers
+// are rejected: workers are expanded into goroutines and slices at task start.
 func (m *Manager) SetWorkers(n int) error {
-	if n <= 0 {
-		return fmt.Errorf("workers 必须 >0")
+	if err := validateWorkerCount(n); err != nil {
+		return err
 	}
 	return m.pg.SetSetting(settingWorkers, strconv.Itoa(n))
+}
+
+func validateWorkerCount(n int) error {
+	if n < 1 || n > maxWorkers {
+		return fmt.Errorf("workers 必须在 1 到 %d 之间", maxWorkers)
+	}
+	return nil
 }
 
 // Enrich returns the asset auto-completion engine (may be nil if init failed).
@@ -662,31 +697,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	}
 	// Asset auto-completion engine (§5): HTTP probes routed through the recording
 	// proxy (via m.ProxyAddr, which honors the traffic-capture toggle).
-	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
-	// LLM 录制开关（默认关）。录制器每次调用时读取此标志。
-	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
-	// Load persisted web-search config (default: off, ddgs).
-	m.webSearchOn = pg.GetBool(settingWebSearchOn, false)
-	if v, ok, _ := pg.GetSetting(settingWebSearchBackend); ok && v != "" {
-		m.webSearchBackend = v
-	} else {
-		m.webSearchBackend = defaultWebSearchBackend
-	}
-	if v, ok, _ := pg.GetSetting(settingBraveKey); ok {
-		m.braveKey = v
-	}
-	if v, ok, _ := pg.GetSetting(settingTavilyKey); ok {
-		m.tavilyKey = v
-	}
-	if v, ok, _ := pg.GetSetting(settingWebSearchProxy); ok {
-		m.webSearchProxy = v
-	}
-	// Global egress proxy (default: direct). When capture is on, feed it to the
-	// MITM as its upstream so recorded traffic exits through it; when capture is
-	// off, ProxyAddr hands it to agents directly (bash env / WebFetch).
-	if v, ok, _ := pg.GetSetting(settingGlobalProxy); ok {
-		m.globalProxy = strings.TrimSpace(v)
-	}
+	m.loadRuntimeSettings()
 	m.initProxyPool()
 	if m.traffic != nil {
 		if err := m.traffic.SetUpstreamProxy(m.globalProxy); err != nil {
@@ -698,6 +709,42 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	// restart with capture already on keeps Playwright routed through the proxy.
 	m.syncBrowserMCPProxy()
 	return m, nil
+}
+
+// loadRuntimeSettings re-reads every persisted setting that is mirrored in
+// memory. NewManager calls it before anything is serving; a settings save uses
+// the narrower loaders below so one field never clobbers another's mirror.
+func (m *Manager) loadRuntimeSettings() {
+	m.trafficOn = m.pg.GetBool(settingTrafficCapture, false)
+	m.llmRecOn = m.pg.GetBool(settingLLMRecord, false)
+	m.loadWebSearchSettings()
+	m.loadGlobalProxySetting()
+}
+
+// loadWebSearchSettings mirrors the persisted web-search config into memory.
+func (m *Manager) loadWebSearchSettings() {
+	// Load persisted web-search config (default: off, ddgs).
+	m.webSearchOn = m.pg.GetBool(settingWebSearchOn, false)
+	if v, ok, _ := m.pg.GetSetting(settingWebSearchBackend); ok && v != "" {
+		m.webSearchBackend = v
+	} else {
+		m.webSearchBackend = defaultWebSearchBackend
+	}
+	m.braveKey, _, _ = m.pg.GetSetting(settingBraveKey)
+	m.tavilyKey, _, _ = m.pg.GetSetting(settingTavilyKey)
+	m.webSearchProxy, _, _ = m.pg.GetSetting(settingWebSearchProxy)
+}
+
+// loadGlobalProxySetting mirrors the persisted global egress proxy into memory
+// (default: direct). When capture is on, it feeds the MITM as its upstream so
+// recorded traffic exits through it; when capture is off, ProxyAddr hands it to
+// agents directly (bash env / WebFetch).
+func (m *Manager) loadGlobalProxySetting() {
+	if v, ok, _ := m.pg.GetSetting(settingGlobalProxy); ok {
+		m.globalProxy = strings.TrimSpace(v)
+	} else {
+		m.globalProxy = ""
+	}
 }
 
 // TrafficEnabled reports whether traffic capture is on (default off). When off,
@@ -739,6 +786,12 @@ func (m *Manager) TrafficExcludeHosts() string {
 // SetTrafficExcludeHosts validates, persists and applies the capture-exclusion
 // list. Excluded hosts are still proxied but no longer recorded; traffic that
 // was already captured is untouched. Effective immediately, no agent rebuild.
+// ValidateTrafficExcludeHosts reports whether raw parses as exclude patterns.
+func ValidateTrafficExcludeHosts(raw string) error {
+	_, err := traffic.ParseExcludeHosts(raw)
+	return err
+}
+
 func (m *Manager) SetTrafficExcludeHosts(raw string) error {
 	patterns, err := traffic.ParseExcludeHosts(raw)
 	if err != nil {
@@ -864,14 +917,28 @@ func (m *Manager) setDeepSeekSearchKey(key string) error {
 	return m.pg.SetSetting(settingDeepSeekSearchKey, strings.TrimSpace(key))
 }
 
+// normalizeWebSearchBackend trims, applies the default, and rejects unknown
+// implementations before anything is persisted.
+func normalizeWebSearchBackend(backend string) (string, error) {
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		backend = defaultWebSearchBackend
+	}
+	switch backend {
+	case defaultWebSearchBackend, "brave-free", "tavily", deepSeekWebSearchBackend:
+		return backend, nil
+	}
+	return "", fmt.Errorf("不支持的搜索后端 %q（可选 ddgs、brave-free、tavily、deepseek）", backend)
+}
+
 // SetWebSearch persists and applies the web-search settings. braveKey, tavilyKey, and
 // proxy are each left untouched when nil (so toggling the switch doesn't wipe a saved
 // key/proxy; pass a pointer to "" to clear). Callers must rebuild agents (applyLLM)
 // afterwards so the settings take effect.
 func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, proxy *string) error {
-	backend = strings.TrimSpace(backend)
-	if backend == "" {
-		backend = defaultWebSearchBackend
+	backend, err := normalizeWebSearchBackend(backend)
+	if err != nil {
+		return err
 	}
 	if err := m.pg.SetBool(settingWebSearchOn, on); err != nil {
 		return err
@@ -1133,8 +1200,7 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 		m.proxyPool.mu.Lock()
 		managed := len(m.proxyPool.entries) > 0
 		if !managed && raw != "" {
-			m.proxyPool.entries = []proxyPoolEntry{{ProxyPoolEntry: ProxyPoolEntry{ID: "proxy-legacy", URL: maskSecrets(raw), Enabled: true, Health: "healthy"}, RawURL: raw}}
-			m.proxyPool.active = "proxy-legacy"
+			m.proxyPool.entries, m.proxyPool.active = legacyProxyPool(raw)
 			m.proxyPoolConfigured.Store(true)
 			if err := m.applyActiveProxyLocked("proxy-legacy", "manual"); err != nil {
 				m.proxyPool.entries = nil
@@ -1165,6 +1231,26 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 	}
 	m.syncBrowserMCPProxy()
 	return nil
+}
+
+// plannedProxyAddr mirrors ProxyAddr for a capture/global-proxy state that is
+// about to be committed, without touching the current memory flags.
+func (m *Manager) plannedProxyAddr(captureOn bool, global string, poolConfigured bool) string {
+	if m.traffic != nil && captureOn {
+		return m.traffic.ProxyAddr()
+	}
+	if (global != "" || poolConfigured) && m.forwardProxy != nil {
+		return m.forwardProxy.Addr()
+	}
+	return maskSecrets(global)
+}
+
+// plannedCACert mirrors ProxyCACert for the capture state about to be committed.
+func (m *Manager) plannedCACert(captureOn bool) string {
+	if m.traffic == nil || !captureOn {
+		return ""
+	}
+	return m.traffic.CACertPath()
 }
 
 func (m *Manager) Close() error {

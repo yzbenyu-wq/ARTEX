@@ -63,7 +63,7 @@ const customKindList = "command / script / http / shell / recipe"
 // validateToolExec enforces per-kind requirements shared by create/update/import.
 // recipe/http need a real parameter schema (the thin {args} shell can't name
 // {param} placeholders); recipe also needs a parseable argv spec.
-func validateToolExec(kind string, schema, execRaw json.RawMessage) error {
+func validateToolExec(kind string, schema, execRaw json.RawMessage, binary string) error {
 	switch kind {
 	case "http", "recipe":
 		if !hasSchemaProps(schema) {
@@ -71,8 +71,12 @@ func validateToolExec(kind string, schema, execRaw json.RawMessage) error {
 		}
 	}
 	if kind == "recipe" {
-		if _, err := parseRecipeExec(execRaw); err != nil {
+		spec, err := parseRecipeExec(execRaw)
+		if err != nil {
 			return err
+		}
+		if strings.TrimSpace(binary) == "" && !staticFirstArg(spec.Argv) {
+			return fmt.Errorf("recipe 未配置 binary 时 argv 首项必须是固定可执行名，不能含 {param}")
 		}
 	}
 	return nil
@@ -121,7 +125,7 @@ func (s *Server) pgCreateCustomTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.ProxyMode = proxyMode
-	if err := validateToolExec(req.Kind, req.Schema, req.Exec); err != nil {
+	if err := validateToolExec(req.Kind, req.Schema, req.Exec, req.Binary); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -137,6 +141,7 @@ func (s *Server) pgCreateCustomTool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.refreshToolPolicy()
 	writeJSON(w, 200, map[string]any{"key": req.Key})
 }
 
@@ -170,7 +175,7 @@ func (s *Server) pgUpdateCustomTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.ProxyMode = proxyMode
-	if err := validateToolExec(req.Kind, req.Schema, req.Exec); err != nil {
+	if err := validateToolExec(req.Kind, req.Schema, req.Exec, req.Binary); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -186,6 +191,7 @@ func (s *Server) pgUpdateCustomTool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.refreshToolPolicy()
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -199,6 +205,7 @@ func (s *Server) pgDeleteCustomTool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.refreshToolPolicy()
 	writeJSON(w, 200, map[string]any{"deleted": key})
 }
 
@@ -424,15 +431,21 @@ func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, pa
 		return actool.Errorf("command 为空"), nil
 	}
 	cmd := renderTemplate(spec.Command, params, shellQuote)
-	// 复用 Bash 也在用的底层 run(经 Bash CoreTool.Call):自动继承安全 floor/超时/
-	// 代理 env/输出溢出。工具与 Bash 平级、共用底层,不经过 Bash 这个工具让模型调。
+	// 复用 Bash 也在用的底层 run(经 Bash CoreTool.Call):自动继承超时/代理 env/
+	// 输出溢出。但 Call 不跑权限检查,安全 floor(catastrophicBash:rm -rf /、fork
+	// bomb、mkfs、dd 写盘)在 CheckPermissions 里——必须显式执行,否则自定义
+	// command 工具能绕过整个安全底线。
 	bashIn, _ := json.Marshal(map[string]any{"command": cmd})
+	bash := actool.NewBash()
+	if dec := bash.CheckPermissions(ctx, bashIn, permission.Context{}); dec.Behavior == permission.Deny {
+		return actool.Errorf("安全底线拦截: " + dec.Message), nil
+	}
 	if spec.TimeoutMs > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeoutOr(spec.TimeoutMs, 120000))
 		defer cancel()
 	}
-	return actool.NewBash().Call(ctx, bashIn, tc)
+	return bash.Call(ctx, bashIn, tc)
 }
 
 // ---------- script(仅 Python):临时文件 + stdin JSON + env ----------
@@ -494,8 +507,11 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 	}
 	pj, _ := json.Marshal(params)
 	c.Stdin = bytes.NewReader(pj) // 参数 JSON 走 stdin
-	out, err := c.CombinedOutput()
-	body := string(out)
+	c.WaitDelay = recipeWaitDelay
+	out := newCappedOutput(recipeHeadBytes, recipeTailBytes)
+	c.Stdout, c.Stderr = out, out
+	err = c.Run()
+	body := out.String()
 	if runCtx.Err() == context.DeadlineExceeded {
 		body += "\n... [超时终止] ..."
 	} else if err != nil {

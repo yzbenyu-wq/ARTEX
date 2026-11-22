@@ -8,6 +8,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -267,11 +268,22 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	// interactive_shell is on, so Bash points at shell_open for interactive programs
 	// without ever referencing a tool that isn't injected (§14.1/§14.2).
 	const bashInteractiveShellNote = "\n\n需要【交互输入】的程序（msfconsole / ssh 交互登录 / mysql、psql、python 等 REPL / 密码或 yes/no 提示 / nc 反弹 shell）不要用 Bash（它没有 stdin、会卡住），改用 shell_open 开交互会话（用完 shell_close）。一次性、非交互命令仍用 Bash。"
+	// last-known tool catalog. A transient ListTools failure must never widen the
+	// tool surface: disabled or unbound custom tools (recipes/scripts/commands)
+	// would otherwise pass through because they have no filterable row.
+	var toolRowsCache atomic.Pointer[[]*db.Tool]
 	agent.ToolResolve = func(ctx context.Context, agentKey string, tools []actool.CoreTool) []actool.CoreTool {
 		rows, err := pg.ListTools()
 		if err != nil {
-			log.Printf("[tools] 读取工具表失败，按代码默认放行: %v", err)
-			return tools
+			if cached := toolRowsCache.Load(); cached != nil {
+				log.Printf("[tools] 读取工具表失败，沿用上次目录: %v", err)
+				rows = *cached
+			} else {
+				log.Printf("[tools] 读取工具表失败且无缓存，本次不注入任何工具: %v", err)
+				return nil
+			}
+		} else {
+			toolRowsCache.Store(&rows)
 		}
 		byKey := make(map[string]*db.Tool, len(rows))
 		for _, t := range rows {

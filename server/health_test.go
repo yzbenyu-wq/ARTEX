@@ -43,7 +43,7 @@ func TestHealthGateAndResponse(t *testing.T) {
 					case "cookie":
 						r.AddCookie(cookie)
 					case "jwt":
-						token, err := signJWT(s.jwtKey)
+						token, err := signJWT(s.jwtKey, 0)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -115,7 +115,7 @@ func TestVersionRequiresAuthentication(t *testing.T) {
 			token := tc.token
 			if token == "valid" {
 				var err error
-				token, err = signJWT(s.jwtKey)
+				token, err = signJWT(s.jwtKey, 0)
 				if err != nil {
 					t.Fatal(err)
 				}

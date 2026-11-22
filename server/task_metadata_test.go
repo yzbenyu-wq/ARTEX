@@ -25,7 +25,7 @@ func TestTaskMetadataPatchReturnsRenameAndPin(t *testing.T) {
 	taskID, _ := strconv.ParseInt(task.ID, 10, 64)
 	defer func() { _ = m.pg.DeleteTask(taskID) }()
 	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestTaskMetadataPatchGlobalAssetSharing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 	defer func() { cancel(); s.Close() }()
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestConversationBatchDeleteReportsMissing(t *testing.T) {
 		_ = m.pg.DeleteConversation(first.ID)
 		_ = m.pg.DeleteConversation(second.ID)
 	}()
-	token, err := signJWT(s.jwtKey)
+	token, err := signJWT(s.jwtKey, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
