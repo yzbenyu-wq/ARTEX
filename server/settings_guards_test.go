@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -86,10 +89,67 @@ func TestPutSettingsRejectsInvalidConcurrencyLimit(t *testing.T) {
 	}
 }
 
-// TestPutMCPServerSettingsCorruptAccess pins both halves of the corrupt-row
-// rule: a partial update is refused (it would silently clear the other list,
-// and an empty allowlist means "allow any"), while submitting both lists
-// repairs the row.
+// TestPutSettingsValidatesPythonInterp pins the save-time check: a bad path is a
+// client error at save, not a surprise at the first script-tool run.
+func TestPutSettingsValidatesPythonInterp(t *testing.T) {
+	s := guardTestServer(t)
+	if err := s.m.pg.SetSetting(settingPythonInterp, "/usr/bin/python3"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = s.m.pg.Exec("DELETE FROM settings WHERE key=$1", settingPythonInterp) })
+
+	for _, body := range []string{
+		`{"python_interpreter":"python3"}`,
+		`{"python_interpreter":"/nonexistent/py-artex-test"}`,
+	} {
+		w := putSettingsForTest(s, body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("body=%s status=%d, want 400; body=%s", body, w.Code, w.Body.String())
+		}
+	}
+	got, _, err := s.m.pg.GetSetting(settingPythonInterp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/usr/bin/python3" {
+		t.Fatalf("stored interpreter=%q, a refused save must not rewrite it", got)
+	}
+
+	executable := filepath.Join(t.TempDir(), "python3")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := putSettingsForTest(s, fmt.Sprintf(`{"python_interpreter":%q}`, executable))
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid path status=%d body=%s", w.Code, w.Body.String())
+	}
+	got, _, err = s.m.pg.GetSetting(settingPythonInterp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != executable {
+		t.Fatalf("stored interpreter=%q, want %q", got, executable)
+	}
+}
+
+// TestSetWebSearchTrimsKeys pins the trim: whitespace around a pasted key would
+// otherwise reach the provider as part of the header value and fail at runtime.
+func TestSetWebSearchTrimsKeys(t *testing.T) {
+	s := guardTestServer(t)
+	t.Cleanup(func() {
+		_, _ = s.m.pg.Exec("DELETE FROM settings WHERE key=$1", settingBraveKey)
+		_, _ = s.m.pg.Exec("DELETE FROM settings WHERE key=$1", settingTavilyKey)
+	})
+	brave, tavily := "  brave-key  ", "\ttavily-key\n"
+	if err := s.m.SetWebSearch(false, "ddgs", &brave, &tavily, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, _, gotBrave, gotTavily, _ := s.m.WebSearch()
+	if gotBrave != "brave-key" || gotTavily != "tavily-key" {
+		t.Fatalf("keys=%q/%q, want trimmed brave-key/tavily-key", gotBrave, gotTavily)
+	}
+}
+
 func TestPutMCPServerSettingsCorruptAccess(t *testing.T) {
 	s := guardTestServer(t)
 	if err := s.m.pg.SetSetting(db.SettingMCPServerAccess, "not-json"); err != nil {

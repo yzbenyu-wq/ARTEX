@@ -951,19 +951,21 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 	m.webSearchBackend = backend
 	m.mu.Unlock()
 	if braveKey != nil {
-		if err := m.pg.SetSetting(settingBraveKey, *braveKey); err != nil {
+		k := strings.TrimSpace(*braveKey)
+		if err := m.pg.SetSetting(settingBraveKey, k); err != nil {
 			return err
 		}
 		m.mu.Lock()
-		m.braveKey = *braveKey
+		m.braveKey = k
 		m.mu.Unlock()
 	}
 	if tavilyKey != nil {
-		if err := m.pg.SetSetting(settingTavilyKey, *tavilyKey); err != nil {
+		k := strings.TrimSpace(*tavilyKey)
+		if err := m.pg.SetSetting(settingTavilyKey, k); err != nil {
 			return err
 		}
 		m.mu.Lock()
-		m.tavilyKey = *tavilyKey
+		m.tavilyKey = k
 		m.mu.Unlock()
 	}
 	if proxy != nil {

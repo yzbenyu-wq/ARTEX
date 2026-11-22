@@ -4123,7 +4123,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		apply.reconcile = true
 	}
 	if req.PythonInterp != nil {
-		writes[settingPythonInterp] = strings.TrimSpace(*req.PythonInterp)
+		p := strings.TrimSpace(*req.PythonInterp)
+		if err := validatePythonInterp(p); err != nil {
+			writeErr(w, 400, "python_interpreter 无效："+err.Error())
+			return
+		}
+		writes[settingPythonInterp] = p
 	}
 	if req.LLMRecord != nil {
 		// 录制器每次调用读取该标志，切换即时生效，无需 applyLLM 重建。
@@ -4264,10 +4269,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		writes[settingWebSearchOn] = strconv.FormatBool(on)
 		writes[settingWebSearchBackend] = backend
 		if req.BraveKey != nil {
-			writes[settingBraveKey] = *req.BraveKey
+			writes[settingBraveKey] = strings.TrimSpace(*req.BraveKey)
 		}
 		if req.TavilyKey != nil {
-			writes[settingTavilyKey] = *req.TavilyKey
+			writes[settingTavilyKey] = strings.TrimSpace(*req.TavilyKey)
 		}
 		if req.WebSearchProxy != nil {
 			writes[settingWebSearchProxy] = strings.TrimSpace(webSearchProxyMerged)
@@ -4634,11 +4639,11 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	// API keys are secrets the form omits when already saved, so fall back to stored.
 	braveKey := storedBraveKey
 	if strings.TrimSpace(req.BraveKey) != "" {
-		braveKey = req.BraveKey
+		braveKey = strings.TrimSpace(req.BraveKey)
 	}
 	tavilyKey := storedTavilyKey
 	if strings.TrimSpace(req.TavilyKey) != "" {
-		tavilyKey = req.TavilyKey
+		tavilyKey = strings.TrimSpace(req.TavilyKey)
 	}
 	deepSeekKey := s.m.deepSeekSearchKey()
 	if strings.TrimSpace(req.DeepSeekSearchKey) != "" {

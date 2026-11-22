@@ -6,11 +6,46 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestValidatePythonInterp(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "python3")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(plain, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"empty falls back to detect", "", false},
+		{"relative path", "python3", true},
+		{"missing path", filepath.Join(dir, "nope"), true},
+		{"directory", dir, true},
+		{"not executable", plain, true},
+		{"executable file", executable, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validatePythonInterp(tc.path)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validatePythonInterp(%q)=%v, wantErr=%v", tc.path, err, tc.wantErr)
+			}
+		})
+	}
+}
 
 func TestRenderTemplateCommand(t *testing.T) {
 	// command: string params shell-quoted; array → JSON (also quoted).

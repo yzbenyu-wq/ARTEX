@@ -287,6 +287,28 @@ func detectPython() string {
 	return ""
 }
 
+// validatePythonInterp rejects a user-set interpreter that cannot run scripts.
+// An empty value is allowed: the runtime falls back to auto-detection.
+func validatePythonInterp(p string) error {
+	if p == "" {
+		return nil
+	}
+	if !filepath.IsAbs(p) {
+		return fmt.Errorf("必须是绝对路径")
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		return fmt.Errorf("路径不存在: %v", err)
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("不是普通文件")
+	}
+	if st.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("没有可执行权限")
+	}
+	return nil
+}
+
 // pythonInterpreter resolves the interpreter: user-set > stored auto-detect > live
 // detect. "" only when truly none found.
 func (s *Server) pythonInterpreter() string {
