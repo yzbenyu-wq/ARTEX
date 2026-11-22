@@ -35,6 +35,11 @@ drop_drill_db() {
 
 drill_once() {
 	latest=$1
+	# 全新建库时业务表还没建，跳过本次演练且不写标记，等下一次 dump 再试。
+	if [ -z "$(psql -d "$PGDATABASE" -Atc "SELECT to_regclass('public.tasks')" 2>/dev/null)" ]; then
+		log "演练跳过：业务表尚未创建"
+		return 2
+	fi
 	log "开始恢复演练：$latest -> $BACKUP_DRILL_DB"
 	drop_drill_db
 	if ! psql -d postgres -qc "CREATE DATABASE \"$BACKUP_DRILL_DB\"" >/dev/null; then
@@ -82,9 +87,11 @@ dump_once() {
 	log "ok $final ($(du -h "$final" | cut -f1))"
 	verify_dump "$final" || return 1
 	if drill_due; then
-		if drill_once "$final"; then
-			touch "$BACKUP_DIR/.last-drill"
-		fi
+		drill_once "$final"
+		case $? in
+		0) touch "$BACKUP_DIR/.last-drill" ;;
+		2) log "演练待下一次备份重试" ;;
+		esac
 	fi
 	return 0
 }
