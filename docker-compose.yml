@@ -27,10 +27,32 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB:-artex}
       BACKUP_KEEP_DAYS: "7"
+      BACKUP_DRILL_EVERY: "7"
     volumes:
       - ./backups:/backups
       - ./scripts/db_backup.sh:/usr/local/bin/db_backup.sh:ro
     entrypoint: ["/bin/sh", "/usr/local/bin/db_backup.sh"]
+    restart: unless-stopped
+
+  # 异地加密备份：仅在启用 offsite profile 时运行。
+  # 用法：在 .env 设置 BACKUP_OFFSITE_HOST_DIR=/Volumes/<磁盘>/artex-backup 与
+  # BACKUP_RESTIC_PASSWORD，然后 docker compose --profile offsite up -d db-offsite。
+  db-offsite:
+    image: restic/restic:0.18.0
+    profiles: ["offsite"]
+    depends_on:
+      db-backup:
+        condition: service_started
+    environment:
+      TZ: Asia/Shanghai
+      RESTIC_REPOSITORY: /offsite/restic
+      RESTIC_PASSWORD: ${BACKUP_RESTIC_PASSWORD:-}
+      BACKUP_DIR: /backups
+    volumes:
+      - ./backups:/backups:ro
+      - ${BACKUP_OFFSITE_HOST_DIR:-./backups/offsite}:/offsite
+      - ./scripts/db_offsite.sh:/usr/local/bin/db_offsite.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/db_offsite.sh"]
     restart: unless-stopped
 
   artex:

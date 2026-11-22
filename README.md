@@ -189,6 +189,33 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 ---
 
+## 数据备份
+
+`docker compose up -d` 会同时启动 `db-backup`：每天把 PostgreSQL 用 `pg_dump` 备份到 `./backups`，保留 7 天。每份 dump 落盘后先做 `pg_restore --list` 完整性校验；每 7 天自动做一次恢复演练——还原来临时库 `artex_drill`，比对 `tasks assets findings llm_usage settings exploration_nodes` 行数后删除临时库，最近一次演练时间记录在 `backups/.last-drill`。
+
+异地加密备份用 restic，默认不启动。挂载外部磁盘后，在 `.env` 增加：
+
+```bash
+BACKUP_OFFSITE_HOST_DIR=/Volumes/<磁盘>/artex-backup
+BACKUP_RESTIC_PASSWORD=<长随机口令>
+```
+
+然后启用 profile：
+
+```bash
+docker compose --profile offsite up -d db-offsite
+```
+
+它会每天把最新 dump 加密同步到外部磁盘的 restic 仓库，保留每日 7 份、每周 8 份（同内容会去重）。恢复：
+
+```bash
+docker compose --profile offsite exec db-offsite restic restore latest --target /restore
+```
+
+`BACKUP_RESTIC_PASSWORD` 丢失后仓库无法解密，请单独保管。若 `BACKUP_OFFSITE_HOST_DIR` 仍指向 `./backups` 下的目录，则与源备份同盘，不构成异地备份。
+
+---
+
 ## 更新升级
 
 > 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（SQLite 等）、`./keys`（jwt.key，保登录会话）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data`、`./keys` 与数据库。
