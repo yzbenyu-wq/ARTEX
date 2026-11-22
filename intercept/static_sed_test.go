@@ -8,7 +8,16 @@ import (
 	"testing"
 )
 
+// The review only trusts system cat/sed paths; a shadowing binary earlier in
+// PATH (e.g. Homebrew on CI images) correctly downgrades capture to incomplete.
+// Pin PATH so these tests assert the analysis instead of the host environment.
+func pinSystemPath(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", "/usr/bin:/bin")
+}
+
 func TestStaticSedSnapshotsMatchNativeSed(t *testing.T) {
+	pinSystemPath(t)
 	dir := t.TempDir()
 	source := "probe2_results.txt probe2_results.txt\nbodies2/a\naXb a.b\n"
 	path := filepath.Join(dir, "old.sh")
@@ -81,6 +90,7 @@ func TestStaticSedRejectsOpaqueOrUnsafeLayouts(t *testing.T) {
 	}
 }
 func TestStaticSedGeneratedInputAndBounds(t *testing.T) {
+	pinSystemPath(t)
 	dir := t.TempDir()
 	in := reviewCommandForTest(t, dir, "cat > old.sh <<'SH'\necho old\nSH\nsed 's/old/new/' old.sh > new.sh; bash new.sh")
 	if in.ScriptCaptureStatus != "complete" || in.Scripts[0].Content != "echo new\n" {
@@ -103,6 +113,7 @@ func TestStaticSedGeneratedInputAndBounds(t *testing.T) {
 }
 
 func TestStaticSedPrefixAnalysisBound(t *testing.T) {
+	pinSystemPath(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "old.sh"), []byte("echo old\n"), 0600); err != nil {
 		t.Fatal(err)
