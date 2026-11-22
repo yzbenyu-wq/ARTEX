@@ -94,7 +94,11 @@ func TestStaticSedGeneratedInputAndBounds(t *testing.T) {
 	dir := t.TempDir()
 	in := reviewCommandForTest(t, dir, "cat > old.sh <<'SH'\necho old\nSH\nsed 's/old/new/' old.sh > new.sh; bash new.sh")
 	if in.ScriptCaptureStatus != "complete" || in.Scripts[0].Content != "echo new\n" {
-		t.Fatalf("known virtual input ignored: %+v", in)
+		catPath, catErr := exec.LookPath("cat")
+		sedPath, sedErr := exec.LookPath("sed")
+		resolved, _ := filepath.EvalSymlinks(catPath)
+		t.Fatalf("known virtual input ignored: path=%q cat=%q(%v) sed=%q(%v) resolved=%q native=%v %+v",
+			os.Getenv("PATH"), catPath, catErr, sedPath, sedErr, resolved, nativeInterpreterFile(resolved), in)
 	}
 	in = reviewCommandForTest(t, dir, "cat > old.sh <<'SH'\necho old\nSH\nsed 's/old/next/' old.sh > next.sh; sed 's/next/final/' next.sh > final.sh; bash final.sh")
 	if in.ScriptCaptureStatus != "complete" || in.Scripts[0].Content != "echo final\n" {
