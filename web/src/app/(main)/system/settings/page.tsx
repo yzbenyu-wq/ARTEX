@@ -65,6 +65,8 @@ export default function SystemSettingsPage() {
   const [proxyInput, setProxyInput] = React.useState("");
   const [savingProxy, setSavingProxy] = React.useState(false);
   const [globalProxyInput, setGlobalProxyInput] = React.useState("");
+  // 已保存的全局代理：状态标签只认它，输入框里的未保存值（尤其被拒的值）不能改变"已配置/未配置"。
+  const [savedGlobalProxy, setSavedGlobalProxy] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
   const [proxyPool, setProxyPool] = React.useState<ProxyPoolEntry[]>([]);
   const [proxyPoolActiveId, setProxyPoolActiveId] = React.useState("");
@@ -150,6 +152,7 @@ export default function SystemSettingsPage() {
     setProxyInput(s.web_search_proxy ?? "");
     const savedProxy = s.global_proxy ?? "";
     setGlobalProxyInput(savedProxy);
+    setSavedGlobalProxy(savedProxy);
     setProxyPool(s.proxy_pool ?? []);
     setProxyPoolActiveId(s.proxy_pool_active_id ?? "");
     setProxyPoolTimed(!!s.proxy_rotate_timed_enabled);
@@ -1000,7 +1003,7 @@ export default function SystemSettingsPage() {
                     </Button>
                   </div>
                   <p className="text-muted-foreground text-xs">
-                    {globalProxyInput.trim() ? t("settings.proxyConfigured") : t("settings.proxyUnconfigured")}
+                    {savedGlobalProxy.trim() ? t("settings.proxyConfigured") : t("settings.proxyUnconfigured")}
                   </p>
                   <details className="text-xs">
                     <summary className="text-muted-foreground cursor-pointer select-none">
