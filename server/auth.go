@@ -139,14 +139,6 @@ func parseAuthToken(tokenStr string, key []byte) (authTokenClaims, bool) {
 	return claims, true
 }
 
-// verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
-// It checks signature/expiry only; session revocation is enforced by
-// verifyAdminJWT (which also compares the token's version).
-func verifyJWT(tokenStr string, key []byte) bool {
-	_, ok := parseAuthToken(tokenStr, key)
-	return ok
-}
-
 // loadAuthTokenVersion reads the session epoch from the settings table. Absent
 // or malformed (admin-editable) → 0, so a corrupted value cannot lock everyone out.
 // A Server with no settings store at all (test wiring; production NewManager

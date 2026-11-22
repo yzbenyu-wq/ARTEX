@@ -38,6 +38,9 @@ var (
 	bootState   selfupdate.State
 )
 
+// updateInDocker is the container probe behind /api/update/*; a seam for tests.
+var updateInDocker = selfupdate.InDocker
+
 // SetBootUpdateState 由 main 在启动时调用一次。
 func SetBootUpdateState(st selfupdate.State) {
 	bootStateMu.Lock()
@@ -211,7 +214,7 @@ func (h *updateHub) subscribe() (<-chan updateProgress, func()) {
 func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 	current := BuildVersion
 	mode := "binary"
-	if selfupdate.InDocker() {
+	if updateInDocker() {
 		mode = "docker"
 	}
 	boot := bootUpdateState()
@@ -277,6 +280,12 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 // 立刻返回 202，实际工作在后台 goroutine 上跑：整包下载可能要几分钟，
 // 挂在请求上会被反代超时掐断。进度走 /api/update/stream。
 func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
+	// 容器里换装只改可写层：装进的是官方发布版二进制（丢掉镜像自带的工具链），
+	// 且下次 docker compose up --force-recreate 就退回镜像版本。升级只能走镜像。
+	if updateInDocker() {
+		writeErr(w, http.StatusBadRequest, "容器部署不支持页内一键更新：请执行 docker compose pull 拉取新镜像并重建容器")
+		return
+	}
 	current := BuildVersion
 
 	// 走缓存：确保装上的就是用户在界面上看到并确认的那个版本。
