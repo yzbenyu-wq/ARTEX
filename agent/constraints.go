@@ -7,7 +7,9 @@ import (
 )
 
 // constraintBlock renders this task's operation constraints (task_constraints) as a
-// high-priority block appended to the planner/worker system prompt. allow/deny are
+// high-priority block appended to the planner/worker system prompt. This is
+// prompt-level guidance only: nothing at the tool boundary enforces target scope.
+// allow/deny are
 // grouped; empty string when there are no constraints (or ts is nil). The framing
 // deliberately puts these ABOVE the exploration/expansion heuristics so a declared
 // boundary wins the tug-of-war against "chase another entry surface".

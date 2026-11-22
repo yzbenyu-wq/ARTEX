@@ -693,6 +693,10 @@
   ],
   "screen.a8e4b260e16c59": ["操作约束", "Operational constraints"],
   "screen.691f172a77731d": ["（框定 planner/worker 的探索边界，共", "(planner/worker boundaries; total:"],
+  "screen.constraintScopeNotice": [
+    "约束会作为最高优先级写入 planner/worker 提示词，由模型自检遵守；平台不会在工具执行前按目标硬性拦截。需要可执行的访问限制时，请同时配置资产/命令拦截规则。",
+    "Constraints are injected into the planner/worker prompt with top priority and self-enforced by the model; the platform does not hard-block targets before tool execution. Pair them with asset/command interception rules when you need enforceable limits."
+  ],
   "screen.e8bc17b1cbc7c0": ["条；改动下一轮规划生效）", "entries; changes take effect in the next planning cycle)"],
   "screen.b645c326ce3ecb": ["禁止", "Deny"],
   "screen.ce7ef28b670ade": ["允许", "Allow"],

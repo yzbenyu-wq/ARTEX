@@ -590,6 +590,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
+          <p className="text-muted-foreground text-xs">{ui("screen.constraintScopeNotice")}</p>
           {/* 新增表单 */}
           <div className="flex flex-wrap items-center gap-2">
             <NativeSelect
